@@ -60,7 +60,7 @@ export function GameStage({
   useEffect(() => engineRef.current?.setSoundOn(soundOn), [soundOn]);
   useEffect(() => engineRef.current?.setRemotePlayers(remotePlayers), [remotePlayers]);
 
-  const touch = (key: "left" | "right" | "jump" | "run", pressed: boolean) => {
+  const touch = (key: "left" | "right" | "forward" | "backward" | "jump" | "run", pressed: boolean) => {
     engineRef.current?.setTouchInput(key, pressed);
   };
 
@@ -70,9 +70,11 @@ export function GameStage({
       {!ready && <div className="game-stage__loading">正在铺设青空遗迹…</div>}
       {active && (
         <div className="touch-controls" aria-label="触摸游戏控制">
-          <div className="touch-controls__cluster">
-            <button className="touch-button" type="button" aria-label="向左" onPointerDown={() => touch("left", true)} onPointerUp={() => touch("left", false)} onPointerCancel={() => touch("left", false)}>←</button>
-            <button className="touch-button" type="button" aria-label="向右" onPointerDown={() => touch("right", true)} onPointerUp={() => touch("right", false)} onPointerCancel={() => touch("right", false)}>→</button>
+          <div className="touch-controls__cluster touch-controls__dpad">
+            <button className="touch-button touch-button--up" type="button" aria-label="向前" onPointerDown={() => touch("forward", true)} onPointerUp={() => touch("forward", false)} onPointerCancel={() => touch("forward", false)}>W</button>
+            <button className="touch-button touch-button--left" type="button" aria-label="向左" onPointerDown={() => touch("left", true)} onPointerUp={() => touch("left", false)} onPointerCancel={() => touch("left", false)}>A</button>
+            <button className="touch-button touch-button--down" type="button" aria-label="向后" onPointerDown={() => touch("backward", true)} onPointerUp={() => touch("backward", false)} onPointerCancel={() => touch("backward", false)}>S</button>
+            <button className="touch-button touch-button--right" type="button" aria-label="向右" onPointerDown={() => touch("right", true)} onPointerUp={() => touch("right", false)} onPointerCancel={() => touch("right", false)}>D</button>
           </div>
           <div className="touch-controls__cluster">
             <button className="touch-button" type="button" aria-label="冲刺" onPointerDown={() => touch("run", true)} onPointerUp={() => touch("run", false)} onPointerCancel={() => touch("run", false)}>⇧</button>

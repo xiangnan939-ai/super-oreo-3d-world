@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "super-oreo-room-worker",
+  "main": "./worker/room-worker.ts",
+  "compatibility_date": "2026-05-22",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_ROOMS",
+        "class_name": "GameRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-game-room",
+      "new_sqlite_classes": ["GameRoom"]
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "https://super-oreo-3d-adventure.pages.dev"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

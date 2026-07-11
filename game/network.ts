@@ -15,8 +15,10 @@ export interface RoomPlayer extends PlayerProfile {
 export interface PlayerFrame extends PlayerProfile {
   x: number;
   y: number;
+  z: number;
   vx: number;
   vy: number;
+  vz: number;
   facing: number;
   action: string;
   tick: number;

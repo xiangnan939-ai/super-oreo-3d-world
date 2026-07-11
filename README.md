@@ -1,18 +1,29 @@
 # 超级奥利奥
 
-原创浏览器 3D 多人平台闯关游戏。角色采用不同夹心配色的奥利奥人物，关卡、敌人、音效与视觉素材均为原创实现；玩法节奏致敬经典平台冒险，但不包含任天堂角色、关卡、贴图或音乐文件。
+原创浏览器第三人称 3D 在线闯关游戏。玩家可在 X/Z 平面自由探索立体箱庭，用鼠标环绕相机，并通过 Cloudflare Durable Objects 与最多三位朋友实时联机。
 
-## 当前可玩内容
+> 本项目采用原创饼干探险家、关卡、贴图与程序化音效。它借鉴经典 3D 平台冒险的明亮箱庭节奏，但不包含任天堂角色、徽标、关卡、音乐或原作资源。
 
-- 3D 关卡「青空遗迹」，全长 168 单位，目标时长约 2–4 分钟
-- 4 个奥利奥角色配色，支持键盘与触屏
-- 左右移动、冲刺、可变跳高、100ms Coyote time、120ms Jump buffer
-- 静态和移动平台、原创导风管、敌人、尖刺、深坑、检查点、终点
-- 57 个星饼/特殊收集物，踩踏敌人和检查点重生
-- 创建/加入 6 位房间码，最多 4 人，实时同步远端角色
-- Cloudflare Durable Object 房间大厅、准备、开局、断线房主迁移
-- 无法连接云端房间时自动使用同源标签页联机演示
-- Web Audio 实时合成原创复古提示音与背景节拍，无外部音频版权依赖
+## 可玩内容
+
+- 真 3D 关卡「晴空绒线庭」：多方向折返路线、草地岛、高低平台、台阶、移动平台与透明风带管
+- 78 枚金币、3 枚星章、11 个敌人、3 个检查点、尖刺/水面/虚空危险区和太阳门终点
+- 第三人称相机：点击画面锁定鼠标，移动鼠标环绕，滚轮缩放，`Esc` 释放
+- 键盘：`W` `S` `A` `D` 自由移动，`Space` 跳跃，`Shift` 冲刺，`R` 重开
+- 触控：四向移动、冲刺、跳跃
+- 60 Hz 确定性 3D 物理：可变跳高、Coyote time、Jump buffer、踩踏、移动平台与检查点重生
+- 最多 4 人房间码联机；无法连接云端时自动启用同浏览器标签页回退通道
+- 原创 Web Audio 节拍与事件音效，无外部音乐版权依赖
+
+## 技术结构
+
+- `game/world3d.ts`：完整 X/Y/Z 箱庭关卡数据
+- `game/simulation3d.ts`：纯 TypeScript、可序列化、固定 60 Hz 的 3D 物理与规则
+- `game/engine.ts`：Three.js 场景、第三人称相机、角色、动画、贴图、粒子与音频
+- `game/network.ts`：房间客户端、位置同步和本地回退
+- `worker/room-worker.ts`：独立 Cloudflare Worker + Durable Object 房间服务
+- `src/main.tsx`：Cloudflare Pages 静态入口
+- `components/`：菜单、大厅、HUD、触控和结算界面
 
 ## 本地运行
 
@@ -20,41 +31,43 @@
 
 ```bash
 npm install
-npm run dev
+npm run dev:pages -- --host 127.0.0.1 --port 4173
 ```
 
-访问开发服务器输出的地址（默认 `http://localhost:3000`）。
+联机 Worker 可在另一个终端运行：
 
-## 操作
+```bash
+npm run dev:room
+```
 
-| 动作 | 键盘 | 触屏 |
-| --- | --- | --- |
-| 左右移动 | `A` / `D` 或方向键 | 左右圆形按钮 |
-| 跳跃 | `Space` / `W` / `↑` | 「跳跃」按钮 |
-| 冲刺 | `Shift` | `⇧` 按钮 |
+静态客户端默认通过 Pages 同源 `/api` 网关连接 Durable Object。仅在分离部署或本地联调时需要设置：
 
-短按跳跃为小跳，持续按住可跳得更高。移动到旗帜处会激活检查点。
-
-## 技术结构
-
-- `game/simulation.ts`：纯 TypeScript、可序列化、固定 60Hz 的物理与规则
-- `game/level.ts`：数据驱动的完整关卡定义
-- `game/engine.ts`：Three.js 场景、角色、动画、相机、粒子和音频
-- `game/network.ts`：房间客户端、状态同步与本机回退通道
-- `worker/index.ts`：Cloudflare Worker 与 Durable Object 房间服务
-- `components/`：大厅、HUD、触控和结果界面
-
-联机房间使用 Durable Object 管理低频房间状态与 WebSocket 状态转发；客户端以 20Hz 发送位置帧。计划书中更进一步的 WebRTC/TURN、D1 排行榜可在后续版本接入，不影响当前游戏核心和房间流程。
+```bash
+VITE_ROOM_API_ORIGIN=https://your-room-worker.workers.dev npm run build:pages
+```
 
 ## 验证
 
 ```bash
 npm run lint
-npm test
+npx tsc --noEmit
+node --test tests/simulation3d.test.mjs
+npm run build:pages
 ```
 
-`npm test` 会执行生产构建、服务端页面检查，以及 60Hz 移动、跳跃、Coyote time、Jump buffer、移动平台、危险物、检查点、敌人和终点测试。
+视觉比对、交互坐标和浏览器控制台验收记录见 `design-qa.md`。
 
-## Cloudflare 部署
+## Cloudflare 发布
 
-项目保留 `vinext` 与 Cloudflare Vite 配置。部署环境需要创建 `GAME_ROOMS` Durable Object 绑定并应用 `v1-game-room` 迁移；生产站点与房间 API 由同一 Worker 提供，因此邀请链接可直接跨设备使用。
+```bash
+# 1. 发布房间 Worker（创建 Durable Object 迁移）
+npm run deploy:room
+
+# 2. 构建静态站点与 Pages Functions 同源网关
+npm run build:pages
+
+# 3. 发布到 Pages
+npm run deploy:pages
+```
+
+`wrangler.jsonc` 把 Pages Functions 绑定到独立 Worker 中的 `GameRoom` Durable Object；浏览器只访问 `pages.dev/api`，因此无需依赖某些网络环境会拦截的公开 `workers.dev` 域名。`wrangler.room.jsonc` 已把直接 Worker API 的 CORS 白名单收紧到生产 Pages 域名。

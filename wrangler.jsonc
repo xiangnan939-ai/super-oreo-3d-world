@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "super-oreo-3d-adventure",
+  "compatibility_date": "2026-05-22",
+  "pages_build_output_dir": "./pages-dist",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_ROOMS",
+        "class_name": "GameRoom",
+        "script_name": "super-oreo-room-worker"
+      }
+    ]
+  }
+}

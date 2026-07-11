@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+/* eslint-disable @next/next/no-img-element -- the same component also ships through static Vite/Cloudflare Pages */
+
+import { useCallback, useEffect, useRef, useState } from "react";
 import { GameStage, type GameHud, type RemotePlayerFrame } from "./GameStage";
 import {
   createOnlineRoom,
@@ -20,9 +22,14 @@ const SKINS = [
 
 const INITIAL_HUD: GameHud = {
   coins: 0,
-  totalCoins: 0,
+  totalCoins: 78,
+  starMedals: 0,
+  totalStarMedals: 3,
+  lives: 5,
   deaths: 0,
+  score: 0,
   elapsedMs: 0,
+  timeRemaining: 420,
   checkpoint: 0,
   finished: false,
 };
@@ -38,12 +45,13 @@ function formatTime(ms: number) {
   return `${minutes}:${seconds}`;
 }
 
-function CookieMark({ accent = "#f5f1df", small = false }: { accent?: string; small?: boolean }) {
+function formatCounter(value: number, digits: number) {
+  return Math.max(0, Math.floor(value)).toString().padStart(digits, "0");
+}
+
+function CookieAvatar({ small = false }: { small?: boolean }) {
   return (
-    <span className={`cookie-mark${small ? " cookie-mark--small" : ""}`} aria-hidden="true">
-      <span className="cookie-mark__cream" style={{ background: accent }} />
-      <span className="cookie-mark__face">✦</span>
-    </span>
+    <img className={`cookie-avatar${small ? " cookie-avatar--small" : ""}`} src="/hud/avatar.png" alt="" aria-hidden="true" />
   );
 }
 
@@ -64,11 +72,6 @@ export function OreoGameApp() {
   const [playerId] = useState(randomPlayerId);
   const room = useRef<RoomConnection | null>(null);
   const nicknameRef = useRef(nickname);
-
-  const selectedSkin = useMemo(
-    () => SKINS.find((item) => item.id === skin) ?? SKINS[0],
-    [skin],
-  );
 
   useEffect(() => {
     nicknameRef.current = nickname;
@@ -224,9 +227,9 @@ export function OreoGameApp() {
         onFinish={handleFinish}
       />
 
-      <header className="topbar">
+      <header className={`topbar${screen === "playing" ? " topbar--playing" : ""}`}>
         <button className="brand-lockup" type="button" onClick={returnHome} aria-label="返回超级奥利奥首页">
-          <CookieMark accent={selectedSkin.accent} small />
+          <CookieAvatar small />
           <span>超级奥利奥</span>
         </button>
         <div className="topbar__actions">
@@ -234,17 +237,28 @@ export function OreoGameApp() {
             <span className="room-chip"><i className={`status-dot status-dot--${roomStatus}`} />房间 {roomCode}</span>
           )}
           <button className="icon-button" type="button" onClick={() => setSoundOn((value) => !value)} aria-label={soundOn ? "关闭声音" : "打开声音"}>
-            {soundOn ? "♫" : "♩"}
+            {soundOn ? "声音开" : "声音关"}
           </button>
         </div>
       </header>
 
       {screen === "playing" && (
         <section className="play-hud" aria-label="游戏状态">
-          <div className="hud-card"><span className="hud-icon hud-icon--coin" /> <b>{hud.coins}</b><small>/{hud.totalCoins}</small></div>
-          <div className="hud-card"><span aria-hidden="true">◆</span><b>{formatTime(hud.elapsedMs)}</b></div>
-          <div className="hud-card hud-card--wide"><small>检查点</small><b>{hud.checkpoint + 1}/4</b></div>
-          <div className="hud-card"><small>失误</small><b>{hud.deaths}</b></div>
+          <div className="hud-stack hud-stack--left">
+            <div className="hud-line hud-line--lives"><CookieAvatar /><strong>×{hud.lives}</strong></div>
+            <div className="hud-line hud-line--coins"><img src="/hud/coin.png" alt="金币" /><strong>×{formatCounter(hud.coins, 2)}</strong><small>/{hud.totalCoins}</small></div>
+            <div className="hud-stars" aria-label={`已收集 ${hud.starMedals} 枚星章`}>
+              {Array.from({ length: hud.totalStarMedals }, (_, index) => (
+                <img key={index} className={index < hud.starMedals ? "is-collected" : ""} src="/hud/star.png" alt="" />
+              ))}
+            </div>
+          </div>
+          <div className="hud-stack hud-stack--right">
+            <div className="hud-timer"><small>TIME</small><strong>{formatCounter(hud.timeRemaining, 4)}</strong></div>
+            <div className="hud-score">{formatCounter(hud.score, 6)}</div>
+          </div>
+          <div className="hud-route"><span>晴空绒线庭</span><strong>检查点 {hud.checkpoint}/3</strong></div>
+          <div className="mouse-hint"><span>点击画面锁定鼠标</span><small>W S A D 移动 · 空格跳跃 · Shift 冲刺 · 鼠标转动视角 · Esc 释放</small></div>
         </section>
       )}
 
@@ -272,26 +286,27 @@ export function OreoGameApp() {
                 className={`skin-card${skin === item.id ? " is-selected" : ""}`}
                 onClick={() => setSkin(item.id)}
               >
-                <CookieMark accent={item.accent} />
+                <CookieAvatar />
                 <span><b>{item.name}</b><small>{item.detail}</small></span>
+                <i className="skin-swatch" style={{ background: item.accent }} aria-hidden="true" />
               </button>
             ))}
           </div>
 
           <div className="primary-actions">
-            <button className="button button--sun" type="button" onClick={startSolo}><span>▶</span> 单人出发</button>
-            <button className="button button--cloud" type="button" onClick={createRoom}><span>＋</span> 创建联机房间</button>
+            <button className="button button--sun" type="button" onClick={startSolo}>单人出发</button>
+            <button className="button button--cloud" type="button" onClick={createRoom}>创建联机房间</button>
           </div>
-          <button className="text-action" type="button" onClick={() => setScreen("join")}>已有房间码？加入朋友的冒险 <span>→</span></button>
+          <button className="text-action" type="button" onClick={() => setScreen("join")}>已有房间码？加入朋友的冒险</button>
 
-          <div className="control-hint"><kbd>A</kbd><kbd>D</kbd> 移动 <kbd>Space</kbd> 跳跃 <kbd>Shift</kbd> 冲刺</div>
+          <div className="control-hint"><kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd> 自由移动 <kbd>Space</kbd> 跳跃 <kbd>Shift</kbd> 冲刺 · 鼠标控制视角</div>
         </section>
       )}
 
       {screen === "join" && (
         <section className="dialog-card join-card">
-          <button className="dialog-close" type="button" onClick={() => setScreen("menu")} aria-label="关闭">×</button>
-          <CookieMark accent={selectedSkin.accent} />
+          <button className="dialog-close" type="button" onClick={() => setScreen("menu")} aria-label="关闭">关闭</button>
+          <CookieAvatar />
           <p className="dialog-kicker">加入好友</p>
           <h2>输入房间码</h2>
           <p>房间码由 6 位字母与数字组成。</p>
@@ -319,28 +334,27 @@ export function OreoGameApp() {
             <div className="player-list">
               {[0, 1, 2, 3].map((slot) => {
                 const player = players[slot];
-                const palette = SKINS.find((item) => item.id === player?.skin)?.accent ?? "#d9e4ea";
                 return (
                   <div className={`player-slot${player ? " is-filled" : ""}`} key={slot}>
-                    {player ? <CookieMark accent={palette} small /> : <span className="empty-slot">＋</span>}
+                    {player ? <CookieAvatar small /> : <span className="empty-slot">空位</span>}
                     <span className="player-name">{player?.name ?? "等待探险家…"}<small>{player?.host ? "房主" : player?.ready ? "已准备" : player ? "整装备中" : `空位 ${slot + 1}`}</small></span>
-                    {player?.ready && <span className="ready-badge">✓</span>}
+                    {player?.ready && <span className="ready-badge">已准备</span>}
                   </div>
                 );
               })}
             </div>
             <div className="lobby-info">
-              <div className="connection-orbit"><CookieMark accent={selectedSkin.accent} /><i /><i /><i /></div>
+              <div className="connection-orbit"><CookieAvatar /><i /><i /><i /></div>
               <h3>{roomStatus === "connected" ? "云端连接稳定" : roomStatus === "fallback" ? "本机联机可用" : "正在连接房间"}</h3>
               <p>{hostPlayer ? `${hostPlayer.name} 是本局房主` : "正在确定房主"}<br />最多 4 人，所有人可独立抵达终点。</p>
-              <button className="button button--outline button--full" type="button" onClick={copyInvite}>{copied ? "✓ 已复制邀请链接" : "复制邀请链接"}</button>
+              <button className="button button--outline button--full" type="button" onClick={copyInvite}>{copied ? "已复制邀请链接" : "复制邀请链接"}</button>
             </div>
           </div>
 
           {notice && <p className="notice" role="status">{notice}</p>}
           <div className="lobby-actions">
             <button className="text-action text-action--muted" type="button" onClick={returnHome}>退出房间</button>
-            {!isHost && <button className={`button ${isReady ? "button--ready" : "button--cloud"}`} type="button" onClick={toggleReady}>{isReady ? "✓ 已准备" : "我准备好了"}</button>}
+            {!isHost && <button className={`button ${isReady ? "button--ready" : "button--cloud"}`} type="button" onClick={toggleReady}>{isReady ? "已准备" : "我准备好了"}</button>}
             {isHost && <button className="button button--sun" type="button" disabled={!canStart} onClick={() => room.current?.startGame()}>{canStart ? "开始冒险" : "等待大家准备"}</button>}
           </div>
         </section>
@@ -354,8 +368,9 @@ export function OreoGameApp() {
           <p>漂亮的最后一跳。你的星饼已经装进冒险口袋。</p>
           <div className="result-stats">
             <div><small>用时</small><strong>{formatTime(hud.elapsedMs)}</strong></div>
-            <div><small>星饼</small><strong>{hud.coins}/{hud.totalCoins}</strong></div>
-            <div><small>失误</small><strong>{hud.deaths}</strong></div>
+            <div><small>金币</small><strong>{hud.coins}/{hud.totalCoins}</strong></div>
+            <div><small>星章</small><strong>{hud.starMedals}/{hud.totalStarMedals}</strong></div>
+            <div><small>得分</small><strong>{formatCounter(hud.score, 6)}</strong></div>
           </div>
           <div className="primary-actions primary-actions--center">
             <button className="button button--sun" type="button" onClick={() => { setHud(INITIAL_HUD); setScreen("playing"); }}>再来一次</button>
