@@ -1,4 +1,4 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
@@ -26,6 +26,11 @@ await build({
   configFile,
   mode: process.env.NODE_ENV === "development" ? "development" : "production",
 });
+
+// `vinext build` writes this pointer for Worker deployments. Wrangler Pages
+// also reads it when present, so remove the generated hint before a Pages
+// upload and let Wrangler use the root Pages configuration instead.
+await rm(resolve(projectRoot, ".wrangler/deploy/config.json"), { force: true });
 
 await mkdir(outputDirectory, { recursive: true });
 await writeFile(

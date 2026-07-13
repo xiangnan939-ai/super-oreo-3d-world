@@ -15,7 +15,7 @@
     "test": "npm run build && node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern pages-dist --ignore-pattern work --ignore-pattern .next",
     "deploy:room": "wrangler deploy --config wrangler.room.jsonc",
-    "deploy:pages": "wrangler pages deploy pages-dist --project-name super-oreo-3d-adventure --branch main --commit-dirty=true",
+    "deploy:pages": "npm run build:pages && wrangler pages deploy pages-dist --project-name super-oreo-3d-adventure --branch main --commit-dirty=true",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

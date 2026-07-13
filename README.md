@@ -65,10 +65,7 @@ npm run build:pages
 # 1. 发布房间 Worker（创建 Durable Object 迁移）
 npm run deploy:room
 
-# 2. 构建静态站点与 Pages Functions 同源网关
-npm run build:pages
-
-# 3. 发布到 Pages
+# 2. 构建静态站点、同源网关并发布到 Pages
 npm run deploy:pages
 ```
 
