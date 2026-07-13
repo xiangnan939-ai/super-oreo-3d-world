@@ -6,12 +6,37 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { GameStage, type GameHud, type RemotePlayerFrame } from "./GameStage";
 import {
   createOnlineRoom,
+  isValidRoomCode,
+  normalizeRoomCode,
   RoomConnection,
   type RoomPlayer,
   type RoomStatus,
+  type RoomTransport,
 } from "../game/network";
+import {
+  DEFAULT_GAME_SETTINGS,
+  GAME_ACTIONS,
+  GAME_ACTION_LABELS,
+  keyCodeLabel,
+  normalizeGameSettings,
+  type GameAction,
+  type GameSettings,
+} from "../game/settings";
 
 type Screen = "menu" | "join" | "lobby" | "playing" | "results";
+type PauseView = "closed" | "menu" | "settings";
+
+const SETTINGS_STORAGE_KEY = "super-oreo-settings-v2";
+const SOUND_STORAGE_KEY = "super-oreo-sound-v1";
+
+const TRANSPORT_LABELS: Record<RoomTransport, { title: string; detail: string }> = {
+  none: { title: "正在建立房主中继", detail: "连接完成后会自动选择最快通道" },
+  "webrtc-direct": { title: "房主直连中继", detail: "玩家数据经房主浏览器实时转发 · WebRTC" },
+  "webrtc-turn": { title: "房主安全中继", detail: "玩家数据经房主浏览器转发 · TURN" },
+  "webrtc-mixed": { title: "房主混合中继", detail: "部分玩家直连房主，其他玩家使用云端通道" },
+  "websocket-relay": { title: "房主云端中继", detail: "房主负责数据转发，Cloudflare 提供传输通道" },
+  local: { title: "本机联机测试", detail: "仅供同一台电脑的开发测试" },
+};
 
 const SKINS = [
   { id: "classic", name: "经典黑巧", accent: "#f5f1df", detail: "均衡" },
@@ -22,14 +47,14 @@ const SKINS = [
 
 const INITIAL_HUD: GameHud = {
   coins: 0,
-  totalCoins: 78,
+  totalCoins: 104,
   starMedals: 0,
   totalStarMedals: 3,
   lives: 5,
   deaths: 0,
   score: 0,
   elapsedMs: 0,
-  timeRemaining: 420,
+  timeRemaining: 720,
   checkpoint: 0,
   finished: false,
 };
@@ -63,15 +88,25 @@ export function OreoGameApp() {
   const [joinCode, setJoinCode] = useState("");
   const [players, setPlayers] = useState<RoomPlayer[]>([]);
   const [roomStatus, setRoomStatus] = useState<RoomStatus>("offline");
+  const [roomTransport, setRoomTransport] = useState<RoomTransport>("none");
   const [isReady, setIsReady] = useState(false);
   const [copied, setCopied] = useState(false);
   const [hud, setHud] = useState<GameHud>(INITIAL_HUD);
   const [remoteFrames, setRemoteFrames] = useState<Record<string, RemotePlayerFrame>>({});
   const [notice, setNotice] = useState("");
   const [soundOn, setSoundOn] = useState(true);
+  const [pauseView, setPauseView] = useState<PauseView>("closed");
+  const [settings, setSettings] = useState<GameSettings>(DEFAULT_GAME_SETTINGS);
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
+  const [bindingAction, setBindingAction] = useState<GameAction | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState("");
   const [playerId] = useState(randomPlayerId);
   const room = useRef<RoomConnection | null>(null);
   const nicknameRef = useRef(nickname);
+  const pauseDialogRef = useRef<HTMLElement | null>(null);
+  const resumeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const pauseReturnFocusRef = useRef<HTMLElement | null>(null);
+  const finishTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     nicknameRef.current = nickname;
@@ -80,17 +115,28 @@ export function OreoGameApp() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
-      const invitedRoom = params.get("room")?.toUpperCase();
-      if (invitedRoom && /^[A-Z0-9]{4,8}$/.test(invitedRoom)) {
+      const invitedRoom = normalizeRoomCode(params.get("room") ?? "");
+      if (isValidRoomCode(invitedRoom)) {
         setJoinCode(invitedRoom);
         setScreen("join");
       }
       const savedName = window.localStorage.getItem("super-oreo-name");
       const savedSkin = window.localStorage.getItem("super-oreo-skin");
+      const savedSettings = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
+      const savedSound = window.localStorage.getItem(SOUND_STORAGE_KEY);
       if (savedName) setNickname(savedName.slice(0, 20));
       if (SKINS.some((item) => item.id === savedSkin)) {
         setSkin(savedSkin as (typeof SKINS)[number]["id"]);
       }
+      if (savedSettings) {
+        try {
+          setSettings(normalizeGameSettings(JSON.parse(savedSettings)));
+        } catch {
+          setSettings(DEFAULT_GAME_SETTINGS);
+        }
+      }
+      if (savedSound !== null) setSoundOn(savedSound !== "false");
+      setSettingsHydrated(true);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -100,22 +146,133 @@ export function OreoGameApp() {
     window.localStorage.setItem("super-oreo-skin", skin);
   }, [nickname, skin]);
 
+  useEffect(() => {
+    if (!settingsHydrated) return;
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }, [settings, settingsHydrated]);
+
+  useEffect(() => {
+    if (!settingsHydrated) return;
+    window.localStorage.setItem(SOUND_STORAGE_KEY, String(soundOn));
+  }, [settingsHydrated, soundOn]);
+
+  const openPauseMenu = useCallback(() => {
+    pauseReturnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    setPauseView("menu");
+  }, []);
+
+  const assignBinding = useCallback((action: GameAction, code: string) => {
+    if (code === "Tab" || code === "Escape") {
+      setSettingsNotice("Tab 与 Esc 是系统保留键，请选择其他按键。");
+      return;
+    }
+    setSettings((current) => {
+      const nextBindings = { ...current.keyBindings };
+      const duplicate = GAME_ACTIONS.find((item) => item !== action && nextBindings[item] === code);
+      if (duplicate) nextBindings[duplicate] = nextBindings[action];
+      nextBindings[action] = code;
+      return { ...current, keyBindings: nextBindings };
+    });
+    setBindingAction(null);
+    setSettingsNotice(`${GAME_ACTION_LABELS[action]} 已设为 ${keyCodeLabel(code)}`);
+  }, []);
+
+  useEffect(() => {
+    if (!bindingAction) return;
+    const captureBinding = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (event.code === "Escape") {
+        setBindingAction(null);
+        setSettingsNotice("已取消按键设置");
+        return;
+      }
+      assignBinding(bindingAction, event.code);
+    };
+    window.addEventListener("keydown", captureBinding, true);
+    return () => window.removeEventListener("keydown", captureBinding, true);
+  }, [assignBinding, bindingAction]);
+
+  useEffect(() => {
+    const togglePause = (event: KeyboardEvent) => {
+      if (screen !== "playing" || pauseView !== "closed" || event.code !== "Tab" || bindingAction) return;
+      if (event.repeat) return;
+      event.preventDefault();
+      openPauseMenu();
+    };
+    window.addEventListener("keydown", togglePause, true);
+    return () => window.removeEventListener("keydown", togglePause, true);
+  }, [bindingAction, openPauseMenu, pauseView, screen]);
+
+  useEffect(() => {
+    if (pauseView === "closed") {
+      const target = pauseReturnFocusRef.current;
+      pauseReturnFocusRef.current = null;
+      if (target && document.contains(target)) target.focus();
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      if (pauseView === "menu") resumeButtonRef.current?.focus();
+      else pauseDialogRef.current?.querySelector<HTMLElement>("[data-settings-autofocus]")?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pauseView]);
+
+  useEffect(() => {
+    if (pauseView === "closed") return;
+    const containFocus = (event: KeyboardEvent) => {
+      if (bindingAction) return;
+      if (event.code === "Escape") {
+        event.preventDefault();
+        setPauseView((current) => current === "settings" ? "menu" : "closed");
+        return;
+      }
+      if (event.code !== "Tab") return;
+      const focusable = [...(pauseDialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+      ) ?? [])].filter((element) => element.offsetParent !== null);
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", containFocus, true);
+    return () => window.removeEventListener("keydown", containFocus, true);
+  }, [bindingAction, pauseView]);
+
   const disconnect = useCallback(() => {
     room.current?.disconnect();
     room.current = null;
     setPlayers([]);
     setRemoteFrames({});
+    setRoomCode("");
     setRoomStatus("offline");
+    setRoomTransport("none");
     setIsReady(false);
   }, []);
 
-  useEffect(() => () => disconnect(), [disconnect]);
+  useEffect(() => () => {
+    disconnect();
+    if (finishTimerRef.current !== null) window.clearTimeout(finishTimerRef.current);
+  }, [disconnect]);
 
   const openRoom = useCallback(
     async (code: string) => {
+      const normalizedCode = normalizeRoomCode(code);
+      if (!isValidRoomCode(normalizedCode)) {
+        setNotice("房间码应为 6 位字符，且不包含容易混淆的 I、O、0、1。");
+        setScreen("join");
+        return;
+      }
       disconnect();
-      const normalizedCode = code.trim().toUpperCase();
-      if (!normalizedCode) return;
       setRoomCode(normalizedCode);
       setScreen("lobby");
       setNotice("正在穿越云端隧道…");
@@ -131,9 +288,11 @@ export function OreoGameApp() {
             setRoomStatus(status);
             setNotice(status === "connected" ? "房间连接成功" : status === "fallback" ? "已进入本机联机模式" : "");
           },
+          onTransport: setRoomTransport,
           onRoomState: (nextPlayers) => setPlayers(nextPlayers),
           onStart: () => {
             setHud(INITIAL_HUD);
+            setPauseView("closed");
             setScreen("playing");
           },
           onPlayerState: (frame) => {
@@ -158,13 +317,19 @@ export function OreoGameApp() {
 
   const createRoom = useCallback(async () => {
     setNotice("正在搭建冒险房间…");
-    const code = await createOnlineRoom();
-    await openRoom(code);
+    try {
+      const code = await createOnlineRoom();
+      await openRoom(code);
+    } catch {
+      setNotice("创建房间失败，请检查网络连接后重试。");
+      setScreen("menu");
+    }
   }, [openRoom]);
 
   const startSolo = useCallback(() => {
     disconnect();
     setHud(INITIAL_HUD);
+    setPauseView("closed");
     setScreen("playing");
   }, [disconnect]);
 
@@ -203,16 +368,30 @@ export function OreoGameApp() {
 
   const handleFinish = useCallback((finalHud: GameHud) => {
     setHud(finalHud);
+    setPauseView("closed");
     room.current?.sendFinish({ elapsedMs: finalHud.elapsedMs, coins: finalHud.coins, deaths: finalHud.deaths });
-    window.setTimeout(() => setScreen("results"), 650);
+    if (finishTimerRef.current !== null) window.clearTimeout(finishTimerRef.current);
+    finishTimerRef.current = window.setTimeout(() => {
+      finishTimerRef.current = null;
+      setScreen("results");
+    }, 650);
   }, []);
 
   const returnHome = useCallback(() => {
+    if (finishTimerRef.current !== null) {
+      window.clearTimeout(finishTimerRef.current);
+      finishTimerRef.current = null;
+    }
     disconnect();
     setHud(INITIAL_HUD);
+    setPauseView("closed");
+    setBindingAction(null);
+    setNotice("");
     setScreen("menu");
     window.history.replaceState({}, "", window.location.pathname);
   }, [disconnect]);
+
+  const transportLabel = TRANSPORT_LABELS[roomTransport];
 
   return (
     <main className="game-shell">
@@ -221,6 +400,8 @@ export function OreoGameApp() {
         attract={screen !== "playing"}
         skin={skin}
         soundOn={soundOn}
+        paused={pauseView !== "closed"}
+        settings={settings}
         remotePlayers={remoteFrames}
         onHud={handleHud}
         onLocalFrame={handleLocalFrame}
@@ -239,6 +420,9 @@ export function OreoGameApp() {
           <button className="icon-button" type="button" onClick={() => setSoundOn((value) => !value)} aria-label={soundOn ? "关闭声音" : "打开声音"}>
             {soundOn ? "声音开" : "声音关"}
           </button>
+          {screen === "playing" && (
+            <button className="icon-button game-menu-button" type="button" onClick={openPauseMenu} aria-label="打开暂停菜单">菜单</button>
+          )}
         </div>
       </header>
 
@@ -257,9 +441,87 @@ export function OreoGameApp() {
             <div className="hud-timer"><small>TIME</small><strong>{formatCounter(hud.timeRemaining, 4)}</strong></div>
             <div className="hud-score">{formatCounter(hud.score, 6)}</div>
           </div>
-          <div className="hud-route"><span>晴空绒线庭</span><strong>检查点 {hud.checkpoint}/3</strong></div>
-          <div className="mouse-hint"><span>点击画面锁定鼠标</span><small>W S A D 移动 · 空格跳跃 · Shift 冲刺 · 鼠标转动视角 · Esc 释放</small></div>
+          <div className="hud-route"><span>晴空绒线庭</span><strong>检查点 {hud.checkpoint}/4</strong></div>
+          <div className="mouse-hint"><span>点击画面锁定鼠标 · Tab 菜单</span><small>{keyCodeLabel(settings.keyBindings.forward)} {keyCodeLabel(settings.keyBindings.backward)} {keyCodeLabel(settings.keyBindings.left)} {keyCodeLabel(settings.keyBindings.right)} 移动 · {keyCodeLabel(settings.keyBindings.jump)} 跳跃 · {keyCodeLabel(settings.keyBindings.sprint)} 冲刺 · 鼠标转动视角</small></div>
         </section>
+      )}
+
+      {screen === "playing" && pauseView !== "closed" && (
+        <div className="pause-overlay" role="presentation">
+          <section ref={pauseDialogRef} className={`pause-card${pauseView === "settings" ? " pause-card--settings" : ""}`} role="dialog" aria-modal="true" aria-labelledby="pause-title">
+            {pauseView === "menu" ? (
+              <>
+                <div className="pause-card__emblem"><CookieAvatar /></div>
+                <p className="dialog-kicker">冒险暂停</p>
+                <h2 id="pause-title">暂停菜单</h2>
+                <p>当前进度已保留。按 <kbd>Esc</kbd> 或点击下方按钮继续。</p>
+                <div className="pause-menu-actions">
+                  <button ref={resumeButtonRef} className="button button--sun button--full" type="button" onClick={() => setPauseView("closed")}>继续游戏</button>
+                  <button className="button button--cloud button--full" type="button" onClick={() => { setSettingsNotice(""); setPauseView("settings"); }}>设置</button>
+                  <button className="button button--outline button--full" type="button" onClick={returnHome}>主菜单</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="pause-settings-heading">
+                  <div><p className="dialog-kicker">个人设置</p><h2 id="pause-title">控制与镜头</h2></div>
+                  <button className="dialog-close" data-settings-autofocus type="button" onClick={() => { setBindingAction(null); setPauseView("menu"); }}>返回</button>
+                </div>
+
+                <div className="settings-layout">
+                  <div className="settings-panel">
+                    <label className="range-setting" htmlFor="mouse-sensitivity">
+                      <span><b>鼠标灵敏度</b><small>{Math.round(settings.mouseSensitivity * 100)}%</small></span>
+                      <input
+                        id="mouse-sensitivity"
+                        type="range"
+                        min="0.35"
+                        max="2"
+                        step="0.05"
+                        value={settings.mouseSensitivity}
+                        aria-valuetext={`${Math.round(settings.mouseSensitivity * 100)}%`}
+                        onChange={(event) => setSettings((current) => ({ ...current, mouseSensitivity: Number(event.target.value) }))}
+                      />
+                    </label>
+                    <button className="toggle-setting" type="button" role="switch" aria-checked={settings.invertYAxis} onClick={() => setSettings((current) => ({ ...current, invertYAxis: !current.invertYAxis }))}>
+                      <span><b>垂直视角反转</b><small>反转鼠标上下移动方向</small></span><i />
+                    </button>
+                    <button className="toggle-setting" type="button" role="switch" aria-checked={settings.autoPointerLock} onClick={() => setSettings((current) => ({ ...current, autoPointerLock: !current.autoPointerLock }))}>
+                      <span><b>点击后锁定鼠标</b><small>关闭后可按住拖动视角</small></span><i />
+                    </button>
+                    <button className="toggle-setting" type="button" role="switch" aria-checked={soundOn} onClick={() => setSoundOn((value) => !value)}>
+                      <span><b>游戏声音</b><small>背景节拍与交互音效</small></span><i />
+                    </button>
+                  </div>
+
+                  <div className="keybind-panel" aria-label="自定义按键">
+                    <div className="keybind-panel__title"><b>自定义按键</b><small>{bindingAction ? "请按下新按键，Esc 取消" : "点击任一按键后重新输入"}</small></div>
+                    <div className="keybind-grid">
+                      {GAME_ACTIONS.map((action) => (
+                        <div className="keybind-row" key={action}>
+                          <span>{GAME_ACTION_LABELS[action]}</span>
+                          <button
+                            className={bindingAction === action ? "is-listening" : ""}
+                            type="button"
+                            onClick={() => { setBindingAction(action); setSettingsNotice(""); }}
+                            aria-label={bindingAction === action
+                              ? `${GAME_ACTION_LABELS[action]}，正在等待输入`
+                              : `${GAME_ACTION_LABELS[action]}，当前为 ${keyCodeLabel(settings.keyBindings[action])}，点击修改`}
+                          >{bindingAction === action ? "请按键…" : keyCodeLabel(settings.keyBindings[action])}</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="settings-footer">
+                  <p role="status">{settingsNotice || "设置会自动保存在此浏览器中"}</p>
+                  <button className="button button--outline" type="button" onClick={() => { setSettings(DEFAULT_GAME_SETTINGS); setSoundOn(true); setSettingsNotice("已恢复默认设置"); }}>恢复默认</button>
+                  <button className="button button--sun" type="button" onClick={() => { setBindingAction(null); setPauseView("closed"); }}>保存并继续</button>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
       )}
 
       {screen === "menu" && (
@@ -298,6 +560,7 @@ export function OreoGameApp() {
             <button className="button button--cloud" type="button" onClick={createRoom}>创建联机房间</button>
           </div>
           <button className="text-action" type="button" onClick={() => setScreen("join")}>已有房间码？加入朋友的冒险</button>
+          {notice && <p className="menu-notice" role="status">{notice}</p>}
 
           <div className="control-hint"><kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd> 自由移动 <kbd>Space</kbd> 跳跃 <kbd>Shift</kbd> 冲刺 · 鼠标控制视角</div>
         </section>
@@ -309,17 +572,21 @@ export function OreoGameApp() {
           <CookieAvatar />
           <p className="dialog-kicker">加入好友</p>
           <h2>输入房间码</h2>
-          <p>房间码由 6 位字母与数字组成。</p>
+          <p>房间码由 6 位字母与数字组成，不含 I、O、0、1。</p>
           <input
             className="room-code-input"
             value={joinCode}
-            maxLength={8}
-            onChange={(event) => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
-            placeholder="OREO88"
+            maxLength={6}
+            onChange={(event) => {
+              setJoinCode(event.target.value.toUpperCase().replace(/[^ABCDEFGHJKLMNPQRSTUVWXYZ23456789]/g, ""));
+              setNotice("");
+            }}
+            placeholder="CKY234"
             autoFocus
             aria-label="房间码"
           />
-          <button className="button button--sun button--full" type="button" disabled={joinCode.length < 4} onClick={() => openRoom(joinCode)}>进入房间</button>
+          <button className="button button--sun button--full" type="button" disabled={!isValidRoomCode(joinCode)} onClick={() => openRoom(joinCode)}>进入房间</button>
+          {notice && <p className="notice" role="status">{notice}</p>}
         </section>
       )}
 
@@ -345,8 +612,9 @@ export function OreoGameApp() {
             </div>
             <div className="lobby-info">
               <div className="connection-orbit"><CookieAvatar /><i /><i /><i /></div>
-              <h3>{roomStatus === "connected" ? "云端连接稳定" : roomStatus === "fallback" ? "本机联机可用" : "正在连接房间"}</h3>
-              <p>{hostPlayer ? `${hostPlayer.name} 是本局房主` : "正在确定房主"}<br />最多 4 人，所有人可独立抵达终点。</p>
+              <span className={`transport-badge transport-badge--${roomTransport}`}>{transportLabel.title}</span>
+              <h3>{roomStatus === "connected" ? "跨设备连接已就绪" : roomStatus === "fallback" ? "本机联机可用" : "正在连接房间"}</h3>
+              <p>{hostPlayer ? `${hostPlayer.name} 的电脑是本局临时主机` : "正在确定房主"}<br />{transportLabel.detail}<br />最多 4 人，所有人可独立抵达终点。</p>
               <button className="button button--outline button--full" type="button" onClick={copyInvite}>{copied ? "已复制邀请链接" : "复制邀请链接"}</button>
             </div>
           </div>

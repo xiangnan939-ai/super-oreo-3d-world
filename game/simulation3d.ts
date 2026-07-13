@@ -30,6 +30,7 @@ export const PHYSICS_3D = {
   playerWidth: 0.72,
   playerHeight: 1.4,
   playerDepth: 0.72,
+  maxStepHeight: 0.56,
   collisionEpsilon: 0.001,
 } as const;
 
@@ -86,11 +87,18 @@ export interface PlatformMotionDefinition3D {
   period: number;
   /** Normalized start phase. Values outside 0..1 wrap safely. */
   phase?: number;
+  /** Optional authored one-way travel/wait timings for true endpoint pauses. */
+  travelSeconds?: number;
+  waitAtEndsSeconds?: number;
+  easing?: "linear" | "smoothstep";
 }
 
 export interface PlatformMotion3D extends Vec3 {
   period: number;
   phase: number;
+  travelSeconds: number | null;
+  waitAtEndsSeconds: number;
+  easing: "linear" | "smoothstep";
 }
 
 export interface PlatformDefinition3D extends Box3D {
@@ -319,6 +327,27 @@ function finiteOr(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? (value as number) : fallback;
 }
 
+function platformMotionProgress(time: number, motion: PlatformMotion3D): number {
+  if (motion.travelSeconds !== null) {
+    const travel = motion.travelSeconds;
+    const wait = motion.waitAtEndsSeconds;
+    const cycle = 2 * (travel + wait);
+    let cycleTime = ((time + motion.phase * cycle) % cycle + cycle) % cycle;
+    const ease = (value: number) => motion.easing === "smoothstep"
+      ? value * value * (3 - 2 * value)
+      : value;
+    if (cycleTime < travel) return ease(cycleTime / travel);
+    cycleTime -= travel;
+    if (cycleTime < wait) return 1;
+    cycleTime -= wait;
+    if (cycleTime < travel) return 1 - ease(cycleTime / travel);
+    return 0;
+  }
+  const rawPhase = time / motion.period + motion.phase;
+  const phase = ((rawPhase % 1) + 1) % 1;
+  return phase < 0.5 ? phase * 2 : (1 - phase) * 2;
+}
+
 function normalizeInput3D(
   input: InputState3D | undefined,
 ): NormalizedInputState3D {
@@ -501,16 +530,25 @@ export function createWorld3D(
           z: finiteOr(platform.motion.z, 0),
           period: platform.motion.period,
           phase: finiteOr(platform.motion.phase, 0),
+          travelSeconds: Number.isFinite(platform.motion.travelSeconds)
+            ? Math.max(0.001, platform.motion.travelSeconds as number)
+            : null,
+          waitAtEndsSeconds: Math.max(0, finiteOr(platform.motion.waitAtEndsSeconds, 0)),
+          easing: platform.motion.easing === "smoothstep" ? "smoothstep" as const : "linear" as const,
         }
       : null;
     if (motion && (!Number.isFinite(motion.period) || motion.period <= 0)) {
       throw new Error(`Platform ${platform.id} motion.period must be positive`);
     }
+    const initialProgress = motion ? platformMotionProgress(0, motion) : 0;
+    const initialX = platform.x + (motion?.x ?? 0) * initialProgress;
+    const initialY = platform.y + (motion?.y ?? 0) * initialProgress;
+    const initialZ = platform.z + (motion?.z ?? 0) * initialProgress;
     return {
       id: platform.id,
-      x: platform.x,
-      y: platform.y,
-      z: platform.z,
+      x: initialX,
+      y: initialY,
+      z: initialZ,
       width: platform.width,
       height: platform.height,
       depth: platform.depth,
@@ -519,9 +557,9 @@ export function createWorld3D(
       originX: platform.x,
       originY: platform.y,
       originZ: platform.z,
-      previousX: platform.x,
-      previousY: platform.y,
-      previousZ: platform.z,
+      previousX: initialX,
+      previousY: initialY,
+      previousZ: initialZ,
     };
   });
   const blockers: Blocker3D[] = (level.blockers ?? []).map((blocker) => ({
@@ -699,9 +737,7 @@ function updateMovingPlatforms3D(world: WorldState3D): void {
     platform.previousY = platform.y;
     platform.previousZ = platform.z;
     if (!platform.motion) continue;
-    const rawPhase = world.time / platform.motion.period + platform.motion.phase;
-    const phase = ((rawPhase % 1) + 1) % 1;
-    const progress = phase < 0.5 ? phase * 2 : (1 - phase) * 2;
+    const progress = platformMotionProgress(world.time, platform.motion);
     platform.x = platform.originX + platform.motion.x * progress;
     platform.y = platform.originY + platform.motion.y * progress;
     platform.z = platform.originZ + platform.motion.z * progress;
@@ -841,6 +877,30 @@ function resolveHorizontalAxis(
     }
   }
   if (collision) {
+    const playerBottom = player.y - player.height / 2;
+    const collisionTop = collision.y + collision.height / 2;
+    const stepHeight = collisionTop - playerBottom;
+    const canStepUp =
+      !collision.oneWay &&
+      stepHeight > PHYSICS_3D.collisionEpsilon &&
+      stepHeight <= PHYSICS_3D.maxStepHeight + PHYSICS_3D.collisionEpsilon;
+
+    if (canStepUp) {
+      const originalY = player.y;
+      player.y = collisionTop + player.height / 2;
+      const blockedAbove = solids.some((solid) =>
+        solid.id !== collision?.id && !solid.oneWay && overlaps3D(player, solid),
+      );
+      if (!blockedAbove) {
+        player.vy = 0;
+        player.grounded = true;
+        player.groundObjectId = collision.id;
+        player.jumpCutAvailable = false;
+        return;
+      }
+      player.y = originalY;
+    }
+
     if (axis === "x") player.vx = 0;
     else player.vz = 0;
   }
@@ -850,6 +910,7 @@ function resolveVertical3D(
   player: PlayerState3D,
   startY: number,
   solids: CollisionBox3D[],
+  preferredSupportId: string | null = null,
 ): boolean {
   const deltaY = player.y - startY;
   if (deltaY <= 0) {
@@ -857,6 +918,24 @@ function resolveVertical3D(
     let landedOn: CollisionBox3D | null = null;
     const oldBottom = startY - player.height / 2;
     const newBottom = player.y - player.height / 2;
+    const preferred = preferredSupportId
+      ? solids.find((solid) => solid.id === preferredSupportId)
+      : undefined;
+    if (preferred && horizontalFootprintOverlap(player, preferred)) {
+      const preferredTop = preferred.y + preferred.height / 2;
+      const penetration = preferredTop - newBottom;
+      if (
+        penetration >= -PHYSICS_3D.collisionEpsilon &&
+        penetration <= PHYSICS_3D.maxStepHeight + PHYSICS_3D.collisionEpsilon
+      ) {
+        player.y = preferredTop + player.height / 2;
+        player.vy = 0;
+        player.grounded = true;
+        player.groundObjectId = preferred.id;
+        player.jumpCutAvailable = false;
+        return true;
+      }
+    }
     for (const solid of solids) {
       if (!horizontalFootprintOverlap(player, solid)) continue;
       const oldTop = solid.previousY + solid.height / 2;
@@ -864,8 +943,14 @@ function resolveVertical3D(
       const crossed =
         oldBottom >= oldTop - PHYSICS_3D.collisionEpsilon &&
         newBottom <= newTop + PHYSICS_3D.collisionEpsilon;
+      const penetration = newTop - newBottom;
+      const shallowRecovery =
+        !solid.oneWay &&
+        overlaps3D(player, solid) &&
+        penetration >= -PHYSICS_3D.collisionEpsilon &&
+        penetration <= PHYSICS_3D.maxStepHeight + PHYSICS_3D.collisionEpsilon;
       if (
-        (crossed || (!solid.oneWay && overlaps3D(player, solid))) &&
+        (crossed || shallowRecovery) &&
         newTop > highestTop
       ) {
         highestTop = newTop;
@@ -985,12 +1070,14 @@ function updatePlayer3D(
   player.jumpBufferRemaining = Math.max(0, player.jumpBufferRemaining - dt);
 
   const wasGrounded = player.grounded;
+  let ridingPlatformId: string | null = null;
   if (wasGrounded) {
     player.coyoteRemaining = PHYSICS_3D.coyoteTime;
     const platform = player.groundObjectId
       ? world.platforms.find((item) => item.id === player.groundObjectId)
       : undefined;
     if (platform) {
+      ridingPlatformId = platform.id;
       player.x += platform.x - platform.previousX;
       player.y += platform.y - platform.previousY;
       player.z += platform.z - platform.previousZ;
@@ -1038,9 +1125,15 @@ function updatePlayer3D(
   player.groundObjectId = null;
 
   const solids = collisionBoxes(world);
+  // A platform carrying the player is supporting their feet, not a wall.
+  // Excluding it from horizontal resolution prevents tiny gravity overlap from
+  // snapping the rider to the platform edge every time movement input is held.
+  const horizontalSolids = ridingPlatformId
+    ? solids.filter((solid) => solid.id !== ridingPlatformId)
+    : solids;
   const startX = player.x;
   player.x += player.vx * dt;
-  resolveHorizontalAxis(player, startX, "x", solids);
+  resolveHorizontalAxis(player, startX, "x", horizontalSolids);
   const halfWidth = player.width / 2;
   if (player.x - halfWidth < world.bounds.minX) {
     player.x = world.bounds.minX + halfWidth;
@@ -1052,7 +1145,7 @@ function updatePlayer3D(
 
   const startZ = player.z;
   player.z += player.vz * dt;
-  resolveHorizontalAxis(player, startZ, "z", solids);
+  resolveHorizontalAxis(player, startZ, "z", horizontalSolids);
   const halfDepth = player.depth / 2;
   if (player.z - halfDepth < world.bounds.minZ) {
     player.z = world.bounds.minZ + halfDepth;
@@ -1065,7 +1158,12 @@ function updatePlayer3D(
   const startY = player.y;
   const previousBottom = startY - player.height / 2;
   player.y += player.vy * dt;
-  const landed = resolveVertical3D(player, startY, solids);
+  const landed = resolveVertical3D(
+    player,
+    startY,
+    solids,
+    player.groundObjectId ?? ridingPlatformId,
+  );
   if (landed && !jumped) {
     player.coyoteRemaining = PHYSICS_3D.coyoteTime;
     consumeBufferedJump3D(player);

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { OreoGameEngine, type EngineFrame, type EngineHud } from "../game/engine";
+import type { GameSettings } from "../game/settings";
 
 export type GameHud = EngineHud;
 export type RemotePlayerFrame = EngineFrame;
@@ -11,6 +12,8 @@ interface GameStageProps {
   attract: boolean;
   skin: string;
   soundOn: boolean;
+  paused: boolean;
+  settings: GameSettings;
   remotePlayers: Record<string, RemotePlayerFrame>;
   onHud(hud: GameHud): void;
   onLocalFrame(frame: Omit<RemotePlayerFrame, "playerId" | "name" | "skin">): void;
@@ -22,6 +25,8 @@ export function GameStage({
   attract,
   skin,
   soundOn,
+  paused,
+  settings,
   remotePlayers,
   onHud,
   onLocalFrame,
@@ -30,7 +35,7 @@ export function GameStage({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<OreoGameEngine | null>(null);
   const callbacksRef = useRef({ onHud, onLocalFrame, onFinish });
-  const initialOptionsRef = useRef({ skin, soundOn });
+  const initialOptionsRef = useRef({ skin, soundOn, settings });
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -42,6 +47,7 @@ export function GameStage({
     const engine = new OreoGameEngine(canvasRef.current, {
       skin: initialOptionsRef.current.skin,
       soundOn: initialOptionsRef.current.soundOn,
+      settings: initialOptionsRef.current.settings,
       onHud: (hud) => callbacksRef.current.onHud(hud),
       onLocalFrame: (frame) => callbacksRef.current.onLocalFrame(frame),
       onFinish: (hud) => callbacksRef.current.onFinish(hud),
@@ -58,6 +64,8 @@ export function GameStage({
   useEffect(() => engineRef.current?.setAttract(attract), [attract]);
   useEffect(() => engineRef.current?.setSkin(skin), [skin]);
   useEffect(() => engineRef.current?.setSoundOn(soundOn), [soundOn]);
+  useEffect(() => engineRef.current?.setPaused(paused), [paused]);
+  useEffect(() => engineRef.current?.setSettings(settings), [settings]);
   useEffect(() => engineRef.current?.setRemotePlayers(remotePlayers), [remotePlayers]);
 
   const touch = (key: "left" | "right" | "forward" | "backward" | "jump" | "run", pressed: boolean) => {
@@ -68,7 +76,7 @@ export function GameStage({
     <div className="game-stage" aria-label="超级奥利奥 3D 游戏画面">
       <canvas ref={canvasRef} />
       {!ready && <div className="game-stage__loading">正在铺设青空遗迹…</div>}
-      {active && (
+      {active && !paused && (
         <div className="touch-controls" aria-label="触摸游戏控制">
           <div className="touch-controls__cluster touch-controls__dpad">
             <button className="touch-button touch-button--up" type="button" aria-label="向前" onPointerDown={() => touch("forward", true)} onPointerUp={() => touch("forward", false)} onPointerCancel={() => touch("forward", false)}>W</button>

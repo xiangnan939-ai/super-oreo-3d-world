@@ -18,7 +18,7 @@
     }
   ],
   "vars": {
-    "ALLOWED_ORIGINS": "https://super-oreo-3d-adventure.pages.dev"
+    "ALLOWED_ORIGINS": "https://essential.eu.cc,https://super-oreo-3d-adventure.pages.dev"
   },
   "observability": {
     "enabled": true

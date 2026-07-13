@@ -1,11 +1,12 @@
 import * as THREE from "three";
-import { WORLD_3D, type AirTube, type Decoration, type GroundRoad } from "./world3d";
+import { WORLD_3D, type AirTube, type BoostPad, type Decoration, type GroundRoad, type WindZone } from "./world3d";
+import { DEFAULT_GAME_SETTINGS, type GameSettings } from "./settings";
+import { toSimulationLevel } from "./level3d";
 import {
   createWorld3D,
   stepWorld3D,
   type GameEvent3D,
   type InputState3D,
-  type LevelDefinition3D,
   type PlayerState3D,
   type WorldState3D,
 } from "./simulation3d";
@@ -46,6 +47,7 @@ export interface EngineFrame {
 interface EngineOptions {
   skin: string;
   soundOn: boolean;
+  settings?: GameSettings;
   onHud(hud: EngineHud): void;
   onLocalFrame(frame: Omit<EngineFrame, "playerId" | "name" | "skin">): void;
   onFinish(hud: EngineHud): void;
@@ -79,88 +81,6 @@ const SKIN_COLORS: Record<string, { cream: number; trim: number; boot: number }>
   mint: { cream: 0x66e5bf, trim: 0xd5fff3, boot: 0x187765 },
   caramel: { cream: 0xffc95d, trim: 0xffefb7, boot: 0xa25c18 },
 };
-
-function box3D(volume: { position: { x: number; y: number; z: number }; size: { x: number; y: number; z: number } }) {
-  return {
-    x: volume.position.x,
-    y: volume.position.y,
-    z: volume.position.z,
-    width: volume.size.x,
-    height: volume.size.y,
-    depth: volume.size.z,
-  };
-}
-
-function toSimulationLevel(): LevelDefinition3D {
-  const staticPlatforms = WORLD_3D.platforms
-    .map((platform) => ({
-      id: platform.id,
-      ...box3D(platform),
-      oneWay: false,
-    }));
-  const movingPlatforms = WORLD_3D.movingPlatforms.map((platform) => ({
-    id: platform.id,
-    ...box3D(platform),
-    oneWay: false,
-    motion: {
-      x: platform.path.to.x - platform.path.from.x,
-      y: platform.path.to.y - platform.path.from.y,
-      z: platform.path.to.z - platform.path.from.z,
-      period: Math.max(1, 2 * (platform.path.travelSeconds + platform.path.waitAtEndsSeconds)),
-      phase: platform.path.phase,
-    },
-  }));
-  return {
-    id: WORLD_3D.metadata.id,
-    name: WORLD_3D.metadata.name,
-    spawn: { ...WORLD_3D.player.position },
-    lives: 5,
-    bounds: {
-      minX: WORLD_3D.bounds.minimumX,
-      maxX: WORLD_3D.bounds.maximumX,
-      minZ: WORLD_3D.bounds.minimumZ,
-      maxZ: WORLD_3D.bounds.maximumZ,
-      killY: WORLD_3D.bounds.deathY,
-    },
-    platforms: [...staticPlatforms, ...movingPlatforms],
-    hazards: WORLD_3D.hazards.filter((hazard) => hazard.active).map((hazard) => ({
-      id: hazard.id,
-      ...box3D(hazard),
-    })),
-    collectibles: WORLD_3D.collectibles.map((item) => ({
-      id: item.id,
-      x: item.position.x,
-      y: item.position.y,
-      z: item.position.z,
-      width: item.pickupRadius * 1.45,
-      height: item.pickupRadius * 1.45,
-      depth: item.pickupRadius * 1.45,
-      value: item.scoreValue,
-    })),
-    enemies: WORLD_3D.enemies.map((enemy) => ({
-      id: enemy.id,
-      x: enemy.position.x,
-      y: enemy.position.y,
-      z: enemy.position.z,
-      width: enemy.colliderSize.x,
-      height: enemy.colliderSize.y,
-      depth: enemy.colliderSize.z,
-      speed: enemy.patrol.speed,
-      direction: 1,
-      patrolAxis: enemy.patrol.axis,
-      patrolMin: enemy.patrol.minimum,
-      patrolMax: enemy.patrol.maximum,
-      stompable: enemy.canBeBouncedOn,
-      points: enemy.scoreValue,
-    })),
-    checkpoints: WORLD_3D.checkpoints.map((checkpoint) => ({
-      id: checkpoint.id,
-      ...box3D(checkpoint),
-      respawn: { ...checkpoint.respawnPosition },
-    })),
-    goal: { id: WORLD_3D.goal.id, ...box3D(WORLD_3D.goal) },
-  };
-}
 
 class AdventureAudio {
   private context: AudioContext | null = null;
@@ -219,6 +139,7 @@ class AdventureAudio {
   }
   death() { this.unlock(); this.sweep(360, 92, 0.32, 0.055, "sawtooth"); }
   tube() { this.unlock(); this.sweep(360, 880, 0.32, 0.036, "sine"); }
+  boost() { this.unlock(); this.sweep(190, 920, 0.22, 0.05, "triangle"); }
   finish() {
     this.unlock();
     if (!this.context) return;
@@ -282,6 +203,7 @@ export class OreoGameEngine {
   private playerGroup: THREE.Group;
   private skin: string;
   private active = false;
+  private paused = false;
   private attract = true;
   private destroyed = false;
   private animationFrame = 0;
@@ -299,7 +221,9 @@ export class OreoGameEngine {
   private lastPointerY = 0;
   private tubeRide: TubeRide | null = null;
   private tubeCooldown = 0;
+  private boostCooldown = 0;
   private readonly tubeCurves = new Map<string, THREE.CatmullRomCurve3>();
+  private settings: GameSettings;
 
   private readonly onResize = () => this.resize();
   private readonly onKeyDown = (event: KeyboardEvent) => this.handleKey(event, true);
@@ -308,21 +232,21 @@ export class OreoGameEngine {
     this.canvas.classList.toggle("is-pointer-locked", document.pointerLockElement === this.canvas);
   };
   private readonly onMouseMove = (event: MouseEvent) => {
-    if (!this.active || document.pointerLockElement !== this.canvas) return;
+    if (!this.active || this.paused || document.pointerLockElement !== this.canvas) return;
     this.orbitBy(event.movementX, event.movementY);
   };
   private readonly onPointerDown = (event: PointerEvent) => {
-    if (!this.active) return;
+    if (!this.active || this.paused) return;
     this.audio.unlock();
     this.dragging = true;
     this.lastPointerX = event.clientX;
     this.lastPointerY = event.clientY;
-    if (event.pointerType === "mouse" && document.pointerLockElement !== this.canvas) {
+    if (this.settings.autoPointerLock && event.pointerType === "mouse" && document.pointerLockElement !== this.canvas) {
       void this.canvas.requestPointerLock();
     }
   };
   private readonly onPointerMove = (event: PointerEvent) => {
-    if (!this.active || !this.dragging) return;
+    if (!this.active || this.paused || !this.dragging) return;
     if (event.pointerType === "mouse" && document.pointerLockElement === this.canvas) return;
     this.orbitBy(event.clientX - this.lastPointerX, event.clientY - this.lastPointerY);
     this.lastPointerX = event.clientX;
@@ -330,8 +254,16 @@ export class OreoGameEngine {
   };
   private readonly onPointerUp = () => { this.dragging = false; };
   private readonly onWheel = (event: WheelEvent) => {
-    if (!this.active) return;
+    if (!this.active || this.paused) return;
     this.cameraDistance = THREE.MathUtils.clamp(this.cameraDistance + event.deltaY * 0.008, 7.5, 18);
+  };
+  private readonly releaseInputs = () => {
+    this.keys.clear();
+    for (const key of Object.keys(this.touch) as Array<keyof TouchInput>) this.touch[key] = false;
+    this.dragging = false;
+  };
+  private readonly onVisibilityChange = () => {
+    if (document.visibilityState !== "visible") this.releaseInputs();
   };
 
   constructor(private readonly canvas: HTMLCanvasElement, private readonly options: EngineOptions) {
@@ -346,6 +278,7 @@ export class OreoGameEngine {
     this.scene.add(this.worldGroup, this.effectsGroup);
     this.audio = new AdventureAudio(options.soundOn);
     this.skin = options.skin;
+    this.settings = options.settings ?? DEFAULT_GAME_SETTINGS;
     this.setupLights();
     this.buildEnvironment();
     this.buildLevel();
@@ -356,6 +289,8 @@ export class OreoGameEngine {
     window.addEventListener("resize", this.onResize);
     window.addEventListener("keydown", this.onKeyDown, { passive: false });
     window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", this.releaseInputs);
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
     document.addEventListener("pointerlockchange", this.onPointerLock);
     document.addEventListener("mousemove", this.onMouseMove);
     canvas.addEventListener("pointerdown", this.onPointerDown);
@@ -369,23 +304,36 @@ export class OreoGameEngine {
   setActive(active: boolean) {
     if (this.active === active) return;
     this.active = active;
+    this.paused = false;
     if (active) {
       this.world = createWorld3D(this.simulationLevel, LOCAL_PLAYER_ID);
       this.finishedNotified = false;
       this.tubeRide = null;
       this.tubeCooldown = 0;
+      this.boostCooldown = 0;
       this.resetVisualState();
       this.resetCamera(true);
       this.lastTime = performance.now();
       this.options.onHud(this.makeHud());
       this.audio.unlock();
     } else {
-      this.keys.clear();
+      this.releaseInputs();
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     }
   }
 
   setAttract(attract: boolean) { this.attract = attract; }
+
+  setPaused(paused: boolean) {
+    this.paused = paused;
+    this.releaseInputs();
+    if (paused && document.pointerLockElement === this.canvas) document.exitPointerLock();
+    this.lastTime = performance.now();
+  }
+
+  setSettings(settings: GameSettings) {
+    this.settings = settings;
+  }
 
   setSkin(skin: string) {
     if (skin === this.skin) return;
@@ -429,6 +377,8 @@ export class OreoGameEngine {
     window.removeEventListener("resize", this.onResize);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.releaseInputs);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     document.removeEventListener("pointerlockchange", this.onPointerLock);
     document.removeEventListener("mousemove", this.onMouseMove);
     this.canvas.removeEventListener("pointerdown", this.onPointerDown);
@@ -446,19 +396,22 @@ export class OreoGameEngine {
     if (this.destroyed) return;
     const dt = Math.min((time - this.lastTime) / 1000, 0.05);
     this.lastTime = time;
-    if (this.active) this.updateGame(dt, time);
+    if (this.active && !this.paused) this.updateGame(dt, time);
+    else if (this.active && this.paused) this.updatePaused(dt, time);
     else if (this.attract) this.updateAttract(dt, time);
     this.updateScenery(dt, time);
-    this.audio.updateMusic(this.active);
+    this.audio.updateMusic(this.active && !this.paused);
     this.renderer.render(this.scene, this.camera);
     this.animationFrame = requestAnimationFrame(this.frame);
   };
 
   private updateGame(dt: number, time: number) {
     this.tubeCooldown = Math.max(0, this.tubeCooldown - dt);
+    this.boostCooldown = Math.max(0, this.boostCooldown - dt);
     if (this.tubeRide) this.updateTubeRide(dt);
     else {
       this.world = stepWorld3D(this.world, this.currentInput(), dt);
+      this.applyInteractiveForces(dt);
       this.tryEnterTube();
     }
     this.handleEvents(this.world.events);
@@ -467,21 +420,7 @@ export class OreoGameEngine {
     this.updateCamera(player, dt);
     this.updateRemoteAvatars(dt, time);
 
-    if (time - this.lastNetworkAt >= NETWORK_TICK_MS) {
-      this.lastNetworkAt = time;
-      const speed = Math.hypot(player.vx, player.vz);
-      this.options.onLocalFrame({
-        x: player.x,
-        y: player.y,
-        z: player.z,
-        vx: player.vx,
-        vy: player.vy,
-        vz: player.vz,
-        facing: player.facingYaw,
-        action: player.status !== "active" ? player.status : !player.grounded ? "jump" : speed > 7.5 ? "run" : speed > 0.4 ? "walk" : "idle",
-        tick: this.world.tick,
-      });
-    }
+    this.emitLocalFrame(time, NETWORK_TICK_MS, false);
     if (time - this.lastHudAt >= HUD_TICK_MS) {
       this.lastHudAt = time;
       this.options.onHud(this.makeHud());
@@ -492,6 +431,32 @@ export class OreoGameEngine {
       this.options.onHud(hud);
       this.options.onFinish(hud);
     }
+  }
+
+  private updatePaused(dt: number, time: number) {
+    this.syncWorldMeshes(time);
+    this.updateRemoteAvatars(dt, time);
+    // Multiplayer peers keep the paused avatar present while local simulation
+    // is frozen. The low-rate idle frame also keeps a host relay alive.
+    this.emitLocalFrame(time, 1_000, true);
+  }
+
+  private emitLocalFrame(time: number, interval: number, paused: boolean) {
+    if (time - this.lastNetworkAt < interval) return;
+    this.lastNetworkAt = time;
+    const player = this.world.players[LOCAL_PLAYER_ID];
+    const speed = Math.hypot(player.vx, player.vz);
+    this.options.onLocalFrame({
+      x: player.x,
+      y: player.y,
+      z: player.z,
+      vx: paused ? 0 : player.vx,
+      vy: paused ? 0 : player.vy,
+      vz: paused ? 0 : player.vz,
+      facing: player.facingYaw,
+      action: paused ? "idle" : player.status !== "active" ? player.status : !player.grounded ? "jump" : speed > 7.5 ? "run" : speed > 0.4 ? "walk" : "idle",
+      tick: this.world.tick,
+    });
   }
 
   private updateAttract(dt: number, time: number) {
@@ -514,40 +479,50 @@ export class OreoGameEngine {
   }
 
   private currentInput(): InputState3D {
+    const bindings = this.settings.keyBindings;
     return {
-      forward: this.keys.has("KeyW") || this.keys.has("ArrowUp") || this.touch.forward,
-      backward: this.keys.has("KeyS") || this.keys.has("ArrowDown") || this.touch.backward,
-      left: this.keys.has("KeyA") || this.keys.has("ArrowLeft") || this.touch.left,
-      right: this.keys.has("KeyD") || this.keys.has("ArrowRight") || this.touch.right,
-      jump: this.keys.has("Space") || this.touch.jump,
-      sprint: this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") || this.touch.run,
+      forward: this.keys.has(bindings.forward) || this.touch.forward,
+      backward: this.keys.has(bindings.backward) || this.touch.backward,
+      left: this.keys.has(bindings.left) || this.touch.left,
+      right: this.keys.has(bindings.right) || this.touch.right,
+      jump: this.keys.has(bindings.jump) || this.touch.jump,
+      sprint: this.keys.has(bindings.sprint) || this.touch.run,
       cameraYaw: this.cameraYaw,
     };
   }
 
   private handleKey(event: KeyboardEvent, pressed: boolean) {
-    const gameKeys = ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space", "ShiftLeft", "ShiftRight", "KeyR"];
+    const gameKeys = Object.values(this.settings.keyBindings);
     if (!gameKeys.includes(event.code)) return;
-    if (this.active) event.preventDefault();
+    if (this.active && !this.paused) event.preventDefault();
+    if (this.paused) return;
     if (pressed) {
       const first = !this.keys.has(event.code);
       this.keys.add(event.code);
       if (this.active && first) {
         this.audio.unlock();
-        if (event.code === "Space") this.audio.jump();
-        if (event.code === "KeyR") {
+        if (event.code === this.settings.keyBindings.jump) this.audio.jump();
+        if (event.code === this.settings.keyBindings.restart) {
           this.world = createWorld3D(this.simulationLevel, LOCAL_PLAYER_ID);
+          this.finishedNotified = false;
+          this.tubeRide = null;
+          this.tubeCooldown = 0;
+          this.boostCooldown = 0;
+          this.lastNetworkAt = 0;
+          this.lastHudAt = 0;
           this.resetVisualState();
           this.resetCamera(true);
+          this.options.onHud(this.makeHud());
         }
       }
     } else this.keys.delete(event.code);
   }
 
   private orbitBy(dx: number, dy: number) {
-    this.cameraYaw -= dx * WORLD_3D.camera.mouseSensitivity;
+    const sensitivity = WORLD_3D.camera.mouseSensitivity * this.settings.mouseSensitivity;
+    this.cameraYaw -= dx * sensitivity;
     this.cameraPitch = THREE.MathUtils.clamp(
-      this.cameraPitch - dy * WORLD_3D.camera.mouseSensitivity,
+      this.cameraPitch - dy * sensitivity * (this.settings.invertYAxis ? -1 : 1),
       WORLD_3D.camera.minimumPitchRadians,
       WORLD_3D.camera.maximumPitchRadians,
     );
@@ -610,6 +585,33 @@ export class OreoGameEngine {
       this.tubeRide = { curve, elapsed: 0, duration: tube.travelSeconds, reverse: Boolean(fromExit) };
       player.vx = 0; player.vy = 0; player.vz = 0; player.grounded = false;
       this.audio.tube();
+      break;
+    }
+  }
+
+  private applyInteractiveForces(dt: number) {
+    const player = this.world.players[LOCAL_PLAYER_ID];
+    if (!player || player.status !== "active") return;
+
+    for (const zone of WORLD_3D.windZones) {
+      if (!this.insideVolume(player, zone)) continue;
+      player.vx = THREE.MathUtils.clamp(player.vx + zone.force.x * dt, -13, 13);
+      player.vy = THREE.MathUtils.clamp(player.vy + zone.force.y * dt, -25, 18);
+      player.vz = THREE.MathUtils.clamp(player.vz + zone.force.z * dt, -13, 13);
+    }
+
+    if (this.boostCooldown > 0) return;
+    for (const pad of WORLD_3D.boostPads) {
+      if (!this.insideVolume(player, pad)) continue;
+      player.vx = pad.launchVelocity.x;
+      player.vy = pad.launchVelocity.y;
+      player.vz = pad.launchVelocity.z;
+      player.grounded = false;
+      player.groundObjectId = null;
+      player.jumpCutAvailable = false;
+      this.boostCooldown = pad.cooldownSeconds;
+      this.audio.boost();
+      this.burstAt(new THREE.Vector3(player.x, player.y - 0.6, player.z), new THREE.Color(pad.color).getHex());
       break;
     }
   }
@@ -755,16 +757,16 @@ export class OreoGameEngine {
     const hemisphere = new THREE.HemisphereLight(WORLD_3D.theme.light.ambient, 0x9f713f, WORLD_3D.theme.light.ambientIntensity);
     this.scene.add(hemisphere);
     const sun = new THREE.DirectionalLight(WORLD_3D.theme.light.sun, WORLD_3D.theme.light.sunIntensity);
-    sun.position.set(-65, 92, -48);
-    sun.target.position.set(0, 0, 18);
+    sun.position.set(-75, 118, -35);
+    sun.target.position.set(10, 0, 55);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -90;
-    sun.shadow.camera.right = 90;
-    sun.shadow.camera.top = 110;
-    sun.shadow.camera.bottom = -80;
+    sun.shadow.camera.left = -130;
+    sun.shadow.camera.right = 130;
+    sun.shadow.camera.top = 185;
+    sun.shadow.camera.bottom = -135;
     sun.shadow.camera.near = 10;
-    sun.shadow.camera.far = 220;
+    sun.shadow.camera.far = 310;
     sun.shadow.bias = -0.00018;
     this.scene.add(sun, sun.target);
   }
@@ -779,9 +781,9 @@ export class OreoGameEngine {
       clearcoat: 0.75,
       clearcoatRoughness: 0.18,
     });
-    const water = new THREE.Mesh(new THREE.PlaneGeometry(240, 260, 12, 12), waterMaterial);
+    const water = new THREE.Mesh(new THREE.PlaneGeometry(320, 340, 14, 14), waterMaterial);
     water.rotation.x = -Math.PI / 2;
-    water.position.set(0, WORLD_3D.waterLevelY, 18);
+    water.position.set(10, WORLD_3D.waterLevelY, 50);
     water.receiveShadow = true;
     water.name = "shimmering-water";
     this.worldGroup.add(water);
@@ -836,7 +838,12 @@ export class OreoGameEngine {
     }
     for (const platform of WORLD_3D.movingPlatforms) {
       const group = this.createPlatform(platform.material, platform.size, 0.32);
-      group.position.set(platform.position.x, platform.position.y, platform.position.z);
+      const simulationPlatform = this.world.platforms.find((item) => item.id === platform.id);
+      group.position.set(
+        simulationPlatform?.x ?? platform.position.x,
+        simulationPlatform?.y ?? platform.position.y,
+        simulationPlatform?.z ?? platform.position.z,
+      );
       group.name = platform.id;
       this.worldGroup.add(group);
       this.platformMeshes.set(platform.id, group);
@@ -858,6 +865,16 @@ export class OreoGameEngine {
     for (const road of WORLD_3D.roads) this.worldGroup.add(this.createRoad(road));
     for (const fence of WORLD_3D.fences) this.worldGroup.add(this.createFence(fence.points, fence.height, fence.postSpacing, fence.postWidth, fence.railWidth));
     for (const tube of WORLD_3D.airTubes) this.worldGroup.add(this.createAirTube(tube));
+    for (const pad of WORLD_3D.boostPads) {
+      const mesh = this.createBoostPad(pad);
+      mesh.position.set(pad.position.x, pad.position.y - pad.size.y / 2, pad.position.z);
+      this.worldGroup.add(mesh);
+    }
+    for (const zone of WORLD_3D.windZones) {
+      const mesh = this.createWindZone(zone);
+      mesh.position.set(zone.position.x, zone.position.y, zone.position.z);
+      this.worldGroup.add(mesh);
+    }
 
     for (const item of WORLD_3D.collectibles) {
       const mesh = this.createCollectible(item.kind);
@@ -1051,6 +1068,65 @@ export class OreoGameEngine {
       orb.userData.tubeCurve = curve;
       orb.userData.tubeOffset = index / 7;
       group.add(orb);
+    }
+    return group;
+  }
+
+  private createBoostPad(pad: BoostPad) {
+    const group = new THREE.Group();
+    group.name = pad.id;
+    const color = new THREE.Color(pad.color);
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.55, 1.75, 0.32, 24),
+      new THREE.MeshStandardMaterial({ color: 0x345e77, metalness: 0.32, roughness: 0.48 }),
+    );
+    base.position.y = 0.16;
+    base.castShadow = true;
+    group.add(base);
+    const spring = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.25, 1.4, 0.24, 24),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.22, roughness: 0.58 }),
+    );
+    spring.position.y = 0.42;
+    spring.name = "boost-spring";
+    group.add(spring);
+    for (let index = 0; index < 3; index += 1) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.48 + index * 0.28, 0.055, 8, 28),
+        new THREE.MeshBasicMaterial({ color: index % 2 ? 0xffffff : color, transparent: true, opacity: 0.72 }),
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.57 + index * 0.08;
+      ring.name = "boost-ring";
+      ring.userData.ringIndex = index;
+      group.add(ring);
+    }
+    return group;
+  }
+
+  private createWindZone(zone: WindZone) {
+    const group = new THREE.Group();
+    group.name = zone.id;
+    group.rotation.y = Math.atan2(zone.force.x, zone.force.z);
+    const material = new THREE.MeshBasicMaterial({
+      color: zone.color,
+      transparent: true,
+      opacity: 0.2,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const length = Math.max(zone.size.x, zone.size.z);
+    for (let index = 0; index < 10; index += 1) {
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(1.1 + (index % 3) * 0.24, 0.045, 8, 24), material.clone());
+      ring.position.set(
+        ((index * 1.71) % 4 - 2) * 0.48,
+        ((index * 1.19) % 4 - 2) * 0.48,
+        -length / 2 + index / 9 * length,
+      );
+      ring.name = "wind-ring";
+      ring.userData.windLength = length;
+      ring.userData.windSpeed = 4.4 + (index % 3) * 0.7;
+      group.add(ring);
     }
     return group;
   }
@@ -1431,6 +1507,20 @@ export class OreoGameEngine {
     }
     this.worldGroup.traverse((object) => {
       if (object.name === "spin-decoration") object.rotation.z += dt * 1.25;
+      if (object.name === "boost-ring") {
+        const index = Number(object.userData.ringIndex) || 0;
+        object.position.y = 0.57 + index * 0.08 + Math.sin(time * 0.006 + index) * 0.08;
+        object.rotation.z += dt * (0.7 + index * 0.18);
+      }
+      if (object.name === "boost-spring") {
+        object.scale.y = 1 + Math.sin(time * 0.006) * 0.08;
+      }
+      if (object.name === "wind-ring") {
+        const length = Number(object.userData.windLength) || 20;
+        object.position.z += dt * (Number(object.userData.windSpeed) || 4.5);
+        if (object.position.z > length / 2) object.position.z -= length;
+        object.rotation.z += dt * 0.55;
+      }
       const curve = object.userData.tubeCurve as THREE.CatmullRomCurve3 | undefined;
       if (curve) {
         const progress = ((time * 0.00022 + Number(object.userData.tubeOffset)) % 1 + 1) % 1;

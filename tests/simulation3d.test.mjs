@@ -174,6 +174,13 @@ test("lands on platform tops, blocks walls, and rides moving platforms", () => {
     Math.abs(world.players.player.z - world.platforms[0].z - relativeZ) < 0.02,
   );
 
+  const relativeBeforeWalking = world.players.player.x - world.platforms[0].x;
+  world = tick(world, { moveX: 1, moveZ: 0 });
+  const relativeAfterWalking = world.players.player.x - world.platforms[0].x;
+  assert.ok(relativeAfterWalking > relativeBeforeWalking);
+  assert.ok(relativeAfterWalking - relativeBeforeWalking < 0.08);
+  assert.equal(world.players.player.groundObjectId, "lift");
+
   world.players.player.x = 6.5;
   world.players.player.z = 2;
   world.players.player.y = 1.2;
@@ -181,6 +188,113 @@ test("lands on platform tops, blocks walls, and rides moving platforms", () => {
   world.players.player.groundObjectId = null;
   world = tick(world, { moveX: 1, moveZ: 0, sprint: true }, 30);
   assert.ok(world.players.player.x <= 7.14 + 1e-6);
+});
+
+test("walks up half-height stairs without snagging on their front faces", () => {
+  const level = baseLevel({
+    spawn: { x: 0, y: 1.2, z: 0 },
+    platforms: [
+      { id: "floor", x: 0, y: 0, z: 0, width: 4, height: 1, depth: 5 },
+      { id: "step-1", x: 2.5, y: 0, z: 0, width: 1, height: 2, depth: 5 },
+      { id: "step-2", x: 3.5, y: 0.25, z: 0, width: 1, height: 2.5, depth: 5 },
+      { id: "landing", x: 6, y: 0.5, z: 0, width: 4, height: 3, depth: 5 },
+    ],
+  });
+  let world = tick(createWorld3D(level), {}, 3);
+  world = tick(world, { moveX: 1, sprint: false }, 65);
+  assert.ok(world.players.player.x > 4);
+  assert.ok(world.players.player.y >= 2.69);
+  assert.equal(world.players.player.grounded, true);
+});
+
+test("initializes phased platforms at their authored phase without a first-tick teleport", () => {
+  const level = baseLevel({
+    spawn: { x: 5, y: 2, z: 0 },
+    platforms: [
+      {
+        id: "phased-lift",
+        x: 0,
+        y: 0,
+        z: 0,
+        width: 4,
+        height: 0.5,
+        depth: 4,
+        motion: { x: 10, period: 2, phase: 0.25 },
+      },
+    ],
+  });
+  const world = createWorld3D(level);
+  assert.equal(world.platforms[0].x, 5);
+  const next = tick(world);
+  assert.ok(Math.abs(next.platforms[0].x - world.platforms[0].x) < 0.18);
+});
+
+test("honours smooth travel and endpoint waits for authored moving platforms", () => {
+  const level = baseLevel({
+    platforms: [{
+      id: "waiting-lift",
+      x: 0,
+      y: 0,
+      z: 0,
+      width: 4,
+      height: 0.5,
+      depth: 4,
+      motion: {
+        x: 4,
+        period: 2,
+        phase: 0,
+        travelSeconds: 0.5,
+        waitAtEndsSeconds: 0.5,
+        easing: "smoothstep",
+      },
+    }],
+  });
+  let world = createWorld3D(level);
+  world = tick(world, {}, 30);
+  assert.ok(Math.abs(world.platforms[0].x - 4) < 1e-9);
+  const atFarEnd = world.platforms[0].x;
+  world = tick(world, {}, 20);
+  assert.equal(world.platforms[0].x, atFarEnd);
+});
+
+test("keeps the previous moving support when overlapping platforms cross heights", () => {
+  const level = baseLevel({
+    spawn: { x: 1.55, y: 0.95, z: 0 },
+    platforms: [
+      {
+        id: "carrier-a",
+        x: 0,
+        y: 0,
+        z: 0,
+        width: 4,
+        height: 0.5,
+        depth: 4,
+        motion: { z: 2, period: 2, phase: 0.12 },
+      },
+      {
+        id: "carrier-b",
+        x: 3.1,
+        y: 0.08,
+        z: 0,
+        width: 4,
+        height: 0.5,
+        depth: 4,
+        motion: { x: -1, y: 0.2, period: 2.4, phase: 0.44 },
+      },
+    ],
+  });
+  let world = createWorld3D(level);
+  const carrier = world.platforms[0];
+  world.players.player.x = 1.55;
+  world.players.player.y = carrier.y + carrier.height / 2 + PHYSICS_3D.playerHeight / 2;
+  world.players.player.z = carrier.z;
+  world.players.player.grounded = true;
+  world.players.player.groundObjectId = "carrier-a";
+
+  for (let index = 0; index < 12; index += 1) {
+    world = tick(world);
+    assert.equal(world.players.player.groundObjectId, "carrier-a");
+  }
 });
 
 test("activates a checkpoint, collects an item, dies, and respawns there", () => {
