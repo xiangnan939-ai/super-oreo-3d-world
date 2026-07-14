@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   FIXED_TIMESTEP_3D,
   PHYSICS_3D,
+  addPlayer3D,
   createWorld3D,
   stepWorld3D,
 } from "../game/simulation3d.ts";
@@ -297,6 +298,207 @@ test("keeps the previous moving support when overlapping platforms cross heights
   }
 });
 
+test("hands a rider to a higher static dock without a lateral snap", () => {
+  const level = baseLevel({
+    spawn: { x: 0, y: 0.95, z: 0 },
+    platforms: [
+      {
+        id: "carrier",
+        x: 0,
+        y: 0,
+        z: 0,
+        width: 4,
+        height: 0.5,
+        depth: 4,
+        motion: { x: 0, y: 0, z: 0, period: 2 },
+      },
+      {
+        id: "arrival-dock",
+        x: 1.5,
+        y: 0.25,
+        z: 0,
+        width: 4,
+        height: 0.5,
+        depth: 4,
+      },
+    ],
+  });
+  const placeOnCarrier = (world) => {
+    const carrier = world.platforms.find((platform) => platform.id === "carrier");
+    const player = world.players.player;
+    player.x = 0;
+    player.y = carrier.y + carrier.height / 2 + PHYSICS_3D.playerHeight / 2;
+    player.z = 0;
+    player.grounded = true;
+    player.groundObjectId = carrier.id;
+    return world;
+  };
+
+  let idleWorld = placeOnCarrier(createWorld3D(level));
+  idleWorld = tick(idleWorld);
+  assert.equal(idleWorld.players.player.groundObjectId, "arrival-dock");
+  assert.ok(Math.abs(idleWorld.players.player.x) < 0.01);
+
+  let walkingWorld = placeOnCarrier(createWorld3D(level));
+  walkingWorld = tick(walkingWorld, { moveX: 1 });
+  assert.equal(walkingWorld.players.player.groundObjectId, "arrival-dock");
+  assert.ok(walkingWorld.players.player.x > 0);
+  assert.ok(walkingWorld.players.player.x < 0.1);
+});
+
+test("uses low acceleration and long stopping distance on ice", () => {
+  const normalLevel = baseLevel();
+  const iceLevel = baseLevel({
+    platforms: [
+      {
+        id: "ground",
+        x: 5,
+        y: 0,
+        z: 0,
+        width: 50,
+        height: 1,
+        depth: 30,
+        surface: "ice",
+      },
+    ],
+  });
+  let normal = tick(createWorld3D(normalLevel), {}, 3);
+  let ice = tick(createWorld3D(iceLevel), {}, 3);
+
+  normal = tick(normal, { moveX: 1 });
+  ice = tick(ice, { moveX: 1 });
+  assert.ok(normal.players.player.vx > ice.players.player.vx * 3);
+
+  normal.players.player.vx = 6;
+  ice.players.player.vx = 6;
+  normal = tick(normal);
+  ice = tick(ice);
+  assert.ok(ice.players.player.vx > normal.players.player.vx + 0.8);
+  assert.equal(ice.players.player.groundObjectId, "ground");
+});
+
+test("combines conveyor velocity with moving-platform carry", () => {
+  const level = baseLevel({
+    spawn: { x: 0, y: 1.2, z: 0 },
+    platforms: [
+      {
+        id: "moving-belt",
+        x: 0,
+        y: 0,
+        z: 0,
+        width: 7,
+        height: 1,
+        depth: 8,
+        surface: "conveyor",
+        conveyorVelocity: { x: 0, z: 1.5 },
+        motion: { x: 4, period: 2 },
+      },
+    ],
+  });
+  let world = tick(createWorld3D(level), {}, 3);
+  assert.equal(world.players.player.groundObjectId, "moving-belt");
+  const relativeX = world.players.player.x - world.platforms[0].x;
+  const relativeZ = world.players.player.z - world.platforms[0].z;
+
+  world = tick(world, {}, 30);
+  const nextRelativeX = world.players.player.x - world.platforms[0].x;
+  const nextRelativeZ = world.players.player.z - world.platforms[0].z;
+  assert.equal(world.players.player.groundObjectId, "moving-belt");
+  assert.ok(Math.abs(nextRelativeX - relativeX) < 0.02);
+  assert.ok(nextRelativeZ - relativeZ > 0.7);
+  assert.ok(nextRelativeZ - relativeZ < 0.8);
+  assert.ok(Math.abs(world.players.player.vz) < 1e-12);
+});
+
+test("updates scheduled hazards deterministically at phase boundaries", () => {
+  const level = baseLevel({
+    hazards: [
+      {
+        id: "pulse-a",
+        x: 12,
+        y: 1,
+        z: 0,
+        width: 1,
+        height: 1,
+        depth: 1,
+        schedule: { periodSeconds: 1, activeSeconds: 0.25 },
+      },
+      {
+        id: "pulse-b",
+        x: 14,
+        y: 1,
+        z: 0,
+        width: 1,
+        height: 1,
+        depth: 1,
+        schedule: {
+          periodSeconds: 1,
+          activeSeconds: 0.25,
+          phaseSeconds: 0.5,
+        },
+      },
+      {
+        id: "disabled-pulse",
+        x: 16,
+        y: 1,
+        z: 0,
+        width: 1,
+        height: 1,
+        depth: 1,
+        active: false,
+        schedule: { periodSeconds: 1, activeSeconds: 1 },
+      },
+    ],
+  });
+  let world = createWorld3D(level);
+  assert.deepEqual(world.hazards.map((hazard) => hazard.active), [true, false, false]);
+
+  world = tick(world, {}, 15);
+  assert.equal(world.time, 0.25);
+  assert.deepEqual(world.hazards.map((hazard) => hazard.active), [false, false, false]);
+
+  world = tick(world, {}, 15);
+  assert.equal(world.time, 0.5);
+  assert.deepEqual(world.hazards.map((hazard) => hazard.active), [false, true, false]);
+
+  world = tick(world, {}, 30);
+  assert.equal(world.time, 1);
+  assert.deepEqual(world.hazards.map((hazard) => hazard.active), [true, false, false]);
+});
+
+test("scheduled hazards only damage players during their active window", () => {
+  const level = baseLevel({
+    hazards: [
+      {
+        id: "timed-spikes",
+        x: 0,
+        y: 1.2,
+        z: 0,
+        width: 1,
+        height: 1,
+        depth: 1,
+        schedule: {
+          periodSeconds: 1,
+          activeSeconds: 0.25,
+          phaseSeconds: 0.5,
+        },
+      },
+    ],
+  });
+  let world = createWorld3D(level);
+  world = tick(world, {}, 29);
+  assert.equal(world.hazards[0].active, false);
+  assert.equal(world.players.player.status, "active");
+
+  world = tick(world);
+  assert.equal(world.time, 0.5);
+  assert.equal(world.hazards[0].active, true);
+  assert.equal(world.players.player.status, "dead");
+  assert.ok(world.events.some((event) =>
+    event.type === "death" && event.sourceId === "timed-spikes"
+  ));
+});
+
 test("activates a checkpoint, collects an item, dies, and respawns there", () => {
   const level = baseLevel({
     checkpoints: [
@@ -408,4 +610,86 @@ test("stomps enemies in 3D and reaches the goal", () => {
   assert.equal(world.players.player.status, "won");
   assert.equal(world.status, "won");
   assert.ok(world.events.some((event) => event.type === "goal"));
+});
+
+test("grants one deterministic air dash per landing", () => {
+  let world = tick(createWorld3D(baseLevel()), {}, 3);
+  world = tick(world, { jump: true });
+  world = tick(world, { jump: false }, 4);
+  assert.equal(world.players.player.grounded, false);
+
+  const beforeX = world.players.player.x;
+  world = tick(world, { dash: true, moveX: 1, moveZ: 0 });
+  assert.ok(world.events.some((event) => event.type === "dash"));
+  assert.ok(world.players.player.dashRemaining > 0);
+  assert.equal(world.players.player.airDashAvailable, false);
+  world = tick(world, { dash: true, moveX: 1, moveZ: 0 }, 5);
+  assert.ok(world.players.player.x > beforeX + 1);
+
+  const xAfterFirstDash = world.players.player.x;
+  world = tick(world, { dash: false, moveX: 0, moveZ: 0 });
+  world = tick(world, { dash: true, moveX: 1, moveZ: 0 });
+  assert.ok(!world.events.some((event) => event.type === "dash"));
+  assert.ok(world.players.player.x - xAfterFirstDash < 0.8);
+
+  for (let index = 0; index < 180 && !world.players.player.grounded; index += 1) {
+    world = tick(world, {});
+  }
+  assert.equal(world.players.player.grounded, true);
+  assert.equal(world.players.player.airDashAvailable, true);
+});
+
+test("keeps later checkpoints when revisiting an earlier route", () => {
+  const level = baseLevel({
+    checkpoints: [
+      { id: "checkpoint-1", order: 1, x: 0, y: 1.2, z: 0, width: 2, height: 3, depth: 2, respawn: { x: 0, y: 1.2, z: 0 } },
+      { id: "checkpoint-2", order: 2, x: 6, y: 1.2, z: 0, width: 2, height: 3, depth: 2, respawn: { x: 6, y: 1.2, z: 0 } },
+    ],
+  });
+  let world = tick(createWorld3D(level), {}, 3);
+  assert.equal(world.players.player.checkpointId, "checkpoint-1");
+  world.players.player.x = 6;
+  world = tick(world);
+  assert.equal(world.players.player.checkpointId, "checkpoint-2");
+  world.players.player.x = 0;
+  world = tick(world);
+  assert.equal(world.players.player.checkpointId, "checkpoint-2");
+  assert.equal(world.players.player.respawnX, 6);
+});
+
+test("simulates hop, float, and charge enemies as distinct behaviors", () => {
+  const level = baseLevel({
+    enemies: [
+      { id: "hopper", x: 8, y: 1.15, z: -5, width: 1, height: 1.3, depth: 1, speed: 1, patrolAxis: "x", patrolMin: 6, patrolMax: 10, behavior: "hop" },
+      { id: "floater", x: 8, y: 2, z: 5, width: 1, height: 1.3, depth: 1, speed: 1, patrolAxis: "x", patrolMin: 6, patrolMax: 10, behavior: "float" },
+      { id: "charger", x: 5, y: 1.15, z: 0, width: 1, height: 1.3, depth: 1, speed: 1, patrolAxis: "x", patrolMin: -10, patrolMax: 10, behavior: "charge" },
+      { id: "walker", x: 5, y: 1.15, z: 3, width: 1, height: 1.3, depth: 1, speed: 1, patrolAxis: "x", patrolMin: -10, patrolMax: 10, behavior: "walk" },
+    ],
+  });
+  let world = createWorld3D(level);
+  world = tick(world, {}, 12);
+  const hopper = world.enemies.find((enemy) => enemy.id === "hopper");
+  const floater = world.enemies.find((enemy) => enemy.id === "floater");
+  const charger = world.enemies.find((enemy) => enemy.id === "charger");
+  const walker = world.enemies.find((enemy) => enemy.id === "walker");
+  assert.notEqual(hopper.y, hopper.startY);
+  assert.notEqual(floater.y, floater.startY);
+  assert.ok(Math.abs(charger.x - charger.startX) > Math.abs(walker.x - walker.startX) * 2);
+});
+
+test("charge enemies select the nearest player who is actually in their lane", () => {
+  const level = baseLevel({
+    enemies: [
+      { id: "charger", x: 0, y: 1.15, z: 0, width: 1, height: 1.3, depth: 1, speed: 1, patrolAxis: "x", patrolMin: -10, patrolMax: 10, behavior: "charge" },
+    ],
+  });
+  let world = addPlayer3D(createWorld3D(level), "guest");
+  world.players.player.x = 1;
+  world.players.player.z = 5;
+  world.players.guest.x = 3;
+  world.players.guest.z = 0;
+  world = tick(world);
+  const charger = world.enemies[0];
+  assert.equal(charger.direction, 1);
+  assert.ok(charger.x > charger.speed * FIXED_TIMESTEP_3D * 2);
 });

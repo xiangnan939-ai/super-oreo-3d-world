@@ -5,6 +5,7 @@ export const GAME_ACTIONS = [
   "right",
   "jump",
   "sprint",
+  "dash",
   "restart",
 ] as const;
 
@@ -29,6 +30,7 @@ export const DEFAULT_GAME_SETTINGS: GameSettings = {
     right: "KeyD",
     jump: "Space",
     sprint: "ShiftLeft",
+    dash: "KeyE",
     restart: "KeyR",
   },
 };
@@ -39,7 +41,8 @@ export const GAME_ACTION_LABELS: Record<GameAction, string> = {
   left: "向左移动",
   right: "向右移动",
   jump: "跳跃",
-  sprint: "冲刺",
+  sprint: "加速奔跑",
+  dash: "空中冲刺",
   restart: "从头重开",
 };
 

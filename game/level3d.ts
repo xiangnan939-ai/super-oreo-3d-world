@@ -1,5 +1,45 @@
 import { WORLD_3D } from "./world3d.ts";
-import type { LevelDefinition3D } from "./simulation3d.ts";
+import type {
+  ConveyorVelocity3D,
+  HazardScheduleDefinition3D,
+  LevelDefinition3D,
+  PlatformSurface3D,
+} from "./simulation3d.ts";
+
+interface AuthoredPlatformGameplay {
+  readonly surface?: PlatformSurface3D;
+  readonly conveyorVelocity?: Partial<ConveyorVelocity3D>;
+}
+
+interface AuthoredHazardGameplay {
+  readonly schedule?: HazardScheduleDefinition3D;
+}
+
+function platformGameplay(value: unknown) {
+  const authored = value as AuthoredPlatformGameplay;
+  return {
+    surface: authored.surface,
+    conveyorVelocity: authored.conveyorVelocity
+      ? {
+          x: authored.conveyorVelocity.x,
+          z: authored.conveyorVelocity.z,
+        }
+      : undefined,
+  };
+}
+
+function hazardGameplay(value: unknown) {
+  const authored = value as AuthoredHazardGameplay;
+  return {
+    schedule: authored.schedule
+      ? {
+          periodSeconds: authored.schedule.periodSeconds,
+          activeSeconds: authored.schedule.activeSeconds,
+          phaseSeconds: authored.schedule.phaseSeconds,
+        }
+      : undefined,
+  };
+}
 
 function box3D(volume: { position: { x: number; y: number; z: number }; size: { x: number; y: number; z: number } }) {
   return {
@@ -14,15 +54,19 @@ function box3D(volume: { position: { x: number; y: number; z: number }; size: { 
 
 /** Convert authored visual world data into deterministic simulation volumes. */
 export function toSimulationLevel(): LevelDefinition3D {
-  const staticPlatforms = WORLD_3D.platforms.map((platform) => ({
+  const staticPlatforms = WORLD_3D.platforms
+    .filter((platform) => String(platform.collision) !== "none")
+    .map((platform) => ({
     id: platform.id,
     ...box3D(platform),
-    oneWay: false,
+    oneWay: String(platform.collision) === "one_way",
+    ...platformGameplay(platform),
   }));
   const movingPlatforms = WORLD_3D.movingPlatforms.map((platform) => ({
     id: platform.id,
     ...box3D(platform),
     oneWay: false,
+    ...platformGameplay(platform),
     motion: {
       x: platform.path.to.x - platform.path.from.x,
       y: platform.path.to.y - platform.path.from.y,
@@ -55,6 +99,7 @@ export function toSimulationLevel(): LevelDefinition3D {
         height: top - bottom,
         depth: xAxis ? ramp.size.z : alongSize / segmentCount + 0.04,
         oneWay: false,
+        ...platformGameplay(ramp),
       };
     });
   });
@@ -87,9 +132,11 @@ export function toSimulationLevel(): LevelDefinition3D {
     },
     platforms: [...staticPlatforms, ...rampPlatforms, ...movingPlatforms],
     blockers: fenceBlockers,
-    hazards: WORLD_3D.hazards.filter((hazard) => hazard.active).map((hazard) => ({
+    hazards: WORLD_3D.hazards.map((hazard) => ({
       id: hazard.id,
       ...box3D(hazard),
+      active: hazard.active,
+      ...hazardGameplay(hazard),
     })),
     collectibles: WORLD_3D.collectibles.map((item) => ({
       id: item.id,
@@ -114,11 +161,14 @@ export function toSimulationLevel(): LevelDefinition3D {
       patrolAxis: enemy.patrol.axis,
       patrolMin: enemy.patrol.minimum,
       patrolMax: enemy.patrol.maximum,
+      behavior: enemy.behavior,
+      pauseAtTurnSeconds: enemy.patrol.pauseAtTurnSeconds,
       stompable: enemy.canBeBouncedOn,
       points: enemy.scoreValue,
     })),
     checkpoints: WORLD_3D.checkpoints.map((checkpoint) => ({
       id: checkpoint.id,
+      order: checkpoint.order,
       ...box3D(checkpoint),
       respawn: { ...checkpoint.respawnPosition },
     })),

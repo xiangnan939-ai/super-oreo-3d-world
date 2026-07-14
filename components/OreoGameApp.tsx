@@ -22,6 +22,7 @@ import {
   type GameAction,
   type GameSettings,
 } from "../game/settings";
+import { WORLD_3D } from "../game/world3d";
 
 type Screen = "menu" | "join" | "lobby" | "playing" | "results";
 type PauseView = "closed" | "menu" | "settings";
@@ -47,15 +48,23 @@ const SKINS = [
 
 const INITIAL_HUD: GameHud = {
   coins: 0,
-  totalCoins: 104,
+  totalCoins: WORLD_3D.collectibles.filter((item) => item.kind === "coin").length,
   starMedals: 0,
-  totalStarMedals: 3,
+  totalStarMedals: WORLD_3D.collectibles.filter((item) => item.kind === "star_medal").length,
+  moonShards: 0,
+  totalMoonShards: WORLD_3D.collectibles.filter((item) => item.kind === "moon_shard").length,
   lives: 5,
   deaths: 0,
   score: 0,
   elapsedMs: 0,
-  timeRemaining: 720,
+  timeRemaining: WORLD_3D.metadata.timeLimitSeconds,
   checkpoint: 0,
+  totalCheckpoints: WORLD_3D.checkpoints.length,
+  biome: WORLD_3D.biomes[0].name,
+  biomeSubtitle: WORLD_3D.biomes[0].subtitle,
+  objective: WORLD_3D.biomes[0].objective,
+  dashReady: true,
+  rating: "C",
   finished: false,
 };
 
@@ -436,13 +445,15 @@ export function OreoGameApp() {
                 <img key={index} className={index < hud.starMedals ? "is-collected" : ""} src="/hud/star.png" alt="" />
               ))}
             </div>
+            <div className="hud-shards" aria-label={`已找到 ${hud.moonShards} 枚月光碎片`}><span>◆</span><strong>{hud.moonShards}/{hud.totalMoonShards}</strong></div>
           </div>
           <div className="hud-stack hud-stack--right">
             <div className="hud-timer"><small>TIME</small><strong>{formatCounter(hud.timeRemaining, 4)}</strong></div>
             <div className="hud-score">{formatCounter(hud.score, 6)}</div>
+            <div className={`hud-dash${hud.dashReady ? " is-ready" : ""}`}><kbd>{keyCodeLabel(settings.keyBindings.dash)}</kbd> 空中冲刺 {hud.dashReady ? "就绪" : "落地充能"}</div>
           </div>
-          <div className="hud-route"><span>晴空绒线庭</span><strong>检查点 {hud.checkpoint}/4</strong></div>
-          <div className="mouse-hint"><span>点击画面锁定鼠标 · Tab 菜单</span><small>{keyCodeLabel(settings.keyBindings.forward)} {keyCodeLabel(settings.keyBindings.backward)} {keyCodeLabel(settings.keyBindings.left)} {keyCodeLabel(settings.keyBindings.right)} 移动 · {keyCodeLabel(settings.keyBindings.jump)} 跳跃 · {keyCodeLabel(settings.keyBindings.sprint)} 冲刺 · 鼠标转动视角</small></div>
+          <div className="hud-route"><small>{hud.biomeSubtitle}</small><span>{hud.biome}</span><strong>{hud.objective}</strong><em>检查点 {hud.checkpoint}/{hud.totalCheckpoints}</em></div>
+          <div className="mouse-hint"><span>点击画面锁定鼠标 · Tab 菜单</span><small>{keyCodeLabel(settings.keyBindings.forward)} {keyCodeLabel(settings.keyBindings.backward)} {keyCodeLabel(settings.keyBindings.left)} {keyCodeLabel(settings.keyBindings.right)} 移动 · {keyCodeLabel(settings.keyBindings.jump)} 跳跃 · {keyCodeLabel(settings.keyBindings.sprint)} 加速 · {keyCodeLabel(settings.keyBindings.dash)} 空中冲刺 · 鼠标转动视角</small></div>
         </section>
       )}
 
@@ -526,12 +537,12 @@ export function OreoGameApp() {
 
       {screen === "menu" && (
         <section className="hero-panel">
-          <div className="eyebrow"><span /> 原创 3D 平台冒险 <span /></div>
+          <div className="eyebrow"><span /> 六境原创 3D 平台远征 <span /></div>
           <h1 aria-label="超级奥利奥">
             <span className="title-super">超级</span>
             <span className="title-oreo">奥利奥</span>
           </h1>
-          <p className="hero-copy">穿过青空遗迹，踩过机关，收集星饼。<br />一个人出发，或者叫上三位朋友。</p>
+          <p className="hero-copy">穿过花庭、齿轮港、霜晶谷、可可熔炉与月光城。<br />寻找隐藏支路，或者叫上三位朋友一起远征。</p>
 
           <label className="nickname-field">
             <span>探险家名字</span>
@@ -562,7 +573,7 @@ export function OreoGameApp() {
           <button className="text-action" type="button" onClick={() => setScreen("join")}>已有房间码？加入朋友的冒险</button>
           {notice && <p className="menu-notice" role="status">{notice}</p>}
 
-          <div className="control-hint"><kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd> 自由移动 <kbd>Space</kbd> 跳跃 <kbd>Shift</kbd> 冲刺 · 鼠标控制视角</div>
+          <div className="control-hint"><kbd>W</kbd><kbd>S</kbd><kbd>A</kbd><kbd>D</kbd> 自由移动 <kbd>Space</kbd> 跳跃 <kbd>Shift</kbd> 加速 <kbd>E</kbd> 空中冲刺 · 鼠标控制视角</div>
         </section>
       )}
 
@@ -632,12 +643,15 @@ export function OreoGameApp() {
         <section className="dialog-card result-card">
           <div className="result-rays" aria-hidden="true" />
           <p className="dialog-kicker">关卡完成</p>
-          <h2>青空遗迹通关！</h2>
-          <p>漂亮的最后一跳。你的星饼已经装进冒险口袋。</p>
+          <div className={`result-rating result-rating--${hud.rating.toLowerCase()}`} aria-label={`${hud.rating} 级评价`}>{hud.rating}</div>
+          <h2>六境远征完成！</h2>
+          <p>你已经穿过月光门。再次挑战可以寻找遗漏的月光碎片、隐藏星章与无伤评级。</p>
           <div className="result-stats">
             <div><small>用时</small><strong>{formatTime(hud.elapsedMs)}</strong></div>
             <div><small>金币</small><strong>{hud.coins}/{hud.totalCoins}</strong></div>
             <div><small>星章</small><strong>{hud.starMedals}/{hud.totalStarMedals}</strong></div>
+            <div><small>月光碎片</small><strong>{hud.moonShards}/{hud.totalMoonShards}</strong></div>
+            <div><small>失误</small><strong>{hud.deaths}</strong></div>
             <div><small>得分</small><strong>{formatCounter(hud.score, 6)}</strong></div>
           </div>
           <div className="primary-actions primary-actions--center">

@@ -1,5 +1,15 @@
 import * as THREE from "three";
-import { WORLD_3D, type AirTube, type BoostPad, type Decoration, type GroundRoad, type WindZone } from "./world3d";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import {
+  WORLD_3D,
+  type AirTube,
+  type AssetProp,
+  type BiomeZone,
+  type BoostPad,
+  type Decoration,
+  type GroundRoad,
+  type WindZone,
+} from "./world3d";
 import { DEFAULT_GAME_SETTINGS, type GameSettings } from "./settings";
 import { toSimulationLevel } from "./level3d";
 import {
@@ -20,12 +30,20 @@ export interface EngineHud {
   totalCoins: number;
   starMedals: number;
   totalStarMedals: number;
+  moonShards: number;
+  totalMoonShards: number;
   lives: number;
   deaths: number;
   score: number;
   elapsedMs: number;
   timeRemaining: number;
   checkpoint: number;
+  totalCheckpoints: number;
+  biome: string;
+  biomeSubtitle: string;
+  objective: string;
+  dashReady: boolean;
+  rating: "S" | "A" | "B" | "C";
   finished: boolean;
 }
 
@@ -60,6 +78,7 @@ interface TouchInput {
   backward: boolean;
   jump: boolean;
   run: boolean;
+  dash: boolean;
 }
 
 interface RemoteAvatar {
@@ -87,6 +106,13 @@ class AdventureAudio {
   private enabled: boolean;
   private nextMusicAt = 0;
   private musicStep = 0;
+  private readonly samples = {
+    grass: "/audio/kenney-impact/footstep_grass_000.ogg",
+    snow: "/audio/kenney-impact/footstep_snow_000.ogg",
+    bell: "/audio/kenney-impact/impactBell_heavy_000.ogg",
+    metal: "/audio/kenney-impact/impactMetal_medium_000.ogg",
+    soft: "/audio/kenney-impact/impactSoft_heavy_000.ogg",
+  } as const;
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
@@ -131,21 +157,40 @@ class AdventureAudio {
     if (!this.context) return;
     [659, 784, 988].forEach((f, i) => this.tone(f, 0.12, 0.04, "triangle", this.context!.currentTime + i * 0.07));
   }
-  stomp() { this.unlock(); this.sweep(180, 340, 0.09, 0.048, "triangle"); }
+  shard() {
+    this.unlock();
+    this.playSample("bell", 0.16, 1.45);
+    if (!this.context) return;
+    [880, 1175, 1320].forEach((f, i) => this.tone(f, 0.16, 0.026, "sine", this.context!.currentTime + i * 0.06));
+  }
+  stomp() { this.unlock(); this.playSample("soft", 0.2, 1.08); this.sweep(180, 340, 0.09, 0.048, "triangle"); }
   checkpoint() {
     this.unlock();
+    this.playSample("bell", 0.16, 1.2);
     if (!this.context) return;
     [523, 659, 784].forEach((f, i) => this.tone(f, 0.1, 0.034, "triangle", this.context!.currentTime + i * 0.07));
   }
   death() { this.unlock(); this.sweep(360, 92, 0.32, 0.055, "sawtooth"); }
   tube() { this.unlock(); this.sweep(360, 880, 0.32, 0.036, "sine"); }
   boost() { this.unlock(); this.sweep(190, 920, 0.22, 0.05, "triangle"); }
+  dash() { this.unlock(); this.playSample("soft", 0.13, 1.85); this.sweep(240, 980, 0.12, 0.035, "sine"); }
+  footstep(surface: "grass" | "snow" | "metal") {
+    this.playSample(surface === "metal" ? "metal" : surface, 0.075, 0.92 + Math.random() * 0.14);
+  }
   finish() {
     this.unlock();
     if (!this.context) return;
     [523, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.19, 0.045, "square", this.context!.currentTime + i * 0.11));
   }
   close() { if (this.context) void this.context.close(); this.context = null; }
+
+  private playSample(name: keyof AdventureAudio["samples"], volume: number, playbackRate: number) {
+    if (!this.enabled || typeof Audio === "undefined") return;
+    const audio = new Audio(this.samples[name]);
+    audio.volume = volume;
+    audio.playbackRate = playbackRate;
+    void audio.play().catch(() => undefined);
+  }
 
   private tone(frequency: number, duration: number, volume: number, type: OscillatorType, when?: number) {
     if (!this.enabled || !this.context) return;
@@ -194,12 +239,20 @@ export class OreoGameEngine {
   private readonly collectibleMeshes = new Map<string, THREE.Object3D>();
   private readonly enemyMeshes = new Map<string, THREE.Object3D>();
   private readonly checkpointMeshes = new Map<string, THREE.Object3D>();
+  private readonly hazardMeshes = new Map<string, THREE.Object3D>();
+  private readonly assetPropMeshes = new Map<string, THREE.Object3D>();
   private readonly remoteAvatars = new Map<string, RemoteAvatar>();
   private readonly cameraColliders: THREE.Object3D[] = [];
   private readonly raycaster = new THREE.Raycaster();
   private readonly keys = new Set<string>();
-  private readonly touch: TouchInput = { left: false, right: false, forward: false, backward: false, jump: false, run: false };
+  private readonly touch: TouchInput = { left: false, right: false, forward: false, backward: false, jump: false, run: false, dash: false };
   private readonly audio: AdventureAudio;
+  private readonly gltfLoader = new GLTFLoader();
+  private readonly textureCache = new Map<string, THREE.Texture>();
+  private readonly animatedScenery = new Set<THREE.Object3D>();
+  private hemisphereLight!: THREE.HemisphereLight;
+  private sunLight!: THREE.DirectionalLight;
+  private skyMaterial: THREE.ShaderMaterial | null = null;
   private playerGroup: THREE.Group;
   private skin: string;
   private active = false;
@@ -222,6 +275,7 @@ export class OreoGameEngine {
   private tubeRide: TubeRide | null = null;
   private tubeCooldown = 0;
   private boostCooldown = 0;
+  private lastFootstepAt = 0;
   private readonly tubeCurves = new Map<string, THREE.CatmullRomCurve3>();
   private settings: GameSettings;
 
@@ -282,8 +336,10 @@ export class OreoGameEngine {
     this.setupLights();
     this.buildEnvironment();
     this.buildLevel();
+    this.indexAnimatedScenery();
     this.playerGroup = this.createCookieCharacter(this.skin, false);
     this.worldGroup.add(this.playerGroup);
+    this.applyDevelopmentSpawn();
     this.resetCamera(true);
     this.resize();
     window.addEventListener("resize", this.onResize);
@@ -307,10 +363,12 @@ export class OreoGameEngine {
     this.paused = false;
     if (active) {
       this.world = createWorld3D(this.simulationLevel, LOCAL_PLAYER_ID);
+      this.applyDevelopmentSpawn();
       this.finishedNotified = false;
       this.tubeRide = null;
       this.tubeCooldown = 0;
       this.boostCooldown = 0;
+      this.lastFootstepAt = 0;
       this.resetVisualState();
       this.resetCamera(true);
       this.lastTime = performance.now();
@@ -323,6 +381,28 @@ export class OreoGameEngine {
   }
 
   setAttract(attract: boolean) { this.attract = attract; }
+
+  /** Local visual-QA hook; Vite removes the branch from production builds. */
+  private applyDevelopmentSpawn() {
+    if (!import.meta.env.DEV) return;
+    const raw = new URLSearchParams(window.location.search).get("qaSpawn");
+    if (!raw) return;
+    const coordinates = raw.split(",").map(Number);
+    if (coordinates.length !== 3 || coordinates.some((value) => !Number.isFinite(value))) return;
+    const [x, y, z] = coordinates;
+    const player = this.world.players[LOCAL_PLAYER_ID];
+    player.x = THREE.MathUtils.clamp(x, this.world.bounds.minX, this.world.bounds.maxX);
+    player.y = Math.max(y, this.world.bounds.killY + player.height);
+    player.z = THREE.MathUtils.clamp(z, this.world.bounds.minZ, this.world.bounds.maxZ);
+    player.vx = 0;
+    player.vy = 0;
+    player.vz = 0;
+    player.grounded = false;
+    player.groundObjectId = null;
+    player.respawnX = player.x;
+    player.respawnY = player.y;
+    player.respawnZ = player.z;
+  }
 
   setPaused(paused: boolean) {
     this.paused = paused;
@@ -417,6 +497,8 @@ export class OreoGameEngine {
     this.handleEvents(this.world.events);
     this.syncWorldMeshes(time);
     const player = this.world.players[LOCAL_PLAYER_ID];
+    this.updateBiome(player, dt);
+    this.updateFootsteps(player, time);
     this.updateCamera(player, dt);
     this.updateRemoteAvatars(dt, time);
 
@@ -454,7 +536,7 @@ export class OreoGameEngine {
       vy: paused ? 0 : player.vy,
       vz: paused ? 0 : player.vz,
       facing: player.facingYaw,
-      action: paused ? "idle" : player.status !== "active" ? player.status : !player.grounded ? "jump" : speed > 7.5 ? "run" : speed > 0.4 ? "walk" : "idle",
+      action: paused ? "idle" : player.status !== "active" ? player.status : player.dashRemaining > 0 ? "dash" : !player.grounded ? "jump" : speed > 7.5 ? "run" : speed > 0.4 ? "walk" : "idle",
       tick: this.world.tick,
     });
   }
@@ -487,6 +569,7 @@ export class OreoGameEngine {
       right: this.keys.has(bindings.right) || this.touch.right,
       jump: this.keys.has(bindings.jump) || this.touch.jump,
       sprint: this.keys.has(bindings.sprint) || this.touch.run,
+      dash: this.keys.has(bindings.dash) || this.touch.dash,
       cameraYaw: this.cameraYaw,
     };
   }
@@ -508,6 +591,7 @@ export class OreoGameEngine {
           this.tubeRide = null;
           this.tubeCooldown = 0;
           this.boostCooldown = 0;
+          this.lastFootstepAt = 0;
           this.lastNetworkAt = 0;
           this.lastHudAt = 0;
           this.resetVisualState();
@@ -535,13 +619,19 @@ export class OreoGameEngine {
       switch (event.type) {
         case "collectible": {
           const mesh = this.collectibleMeshes.get(event.collectibleId);
-          this.burstAt(mesh?.getWorldPosition(new THREE.Vector3()), event.collectibleId.startsWith("star-medal") ? 0x82f33b : 0xffd748);
-          if (event.collectibleId.startsWith("star-medal")) this.audio.star(); else this.audio.collect();
+          const isStar = event.collectibleId.startsWith("star-medal");
+          const isShard = event.collectibleId.startsWith("moon-shard");
+          this.burstAt(mesh?.getWorldPosition(new THREE.Vector3()), isStar ? 0x82f33b : isShard ? 0xaad8ff : 0xffd748);
+          if (isStar) this.audio.star(); else if (isShard) this.audio.shard(); else this.audio.collect();
           break;
         }
         case "enemy-stomp":
           this.audio.stomp();
           this.burstAt(this.enemyMeshes.get(event.enemyId)?.getWorldPosition(new THREE.Vector3()), 0xf4c76b);
+          break;
+        case "dash":
+          this.audio.dash();
+          this.burstAt(new THREE.Vector3(player.x, player.y + 0.15, player.z), 0xb8edff);
           break;
         case "checkpoint": this.audio.checkpoint(); this.activateCheckpoint(event.checkpointId); break;
         case "death": this.audio.death(); this.burstAt(new THREE.Vector3(player.x, player.y, player.z), 0xffffff); break;
@@ -554,22 +644,85 @@ export class OreoGameEngine {
 
   private makeHud(finished = this.world.status === "won"): EngineHud {
     const player = this.world.players[LOCAL_PLAYER_ID];
-    const coins = this.world.collectibles.filter((item) => item.collected && !item.id.startsWith("star-medal")).length;
+    const collectedIds = new Set(this.world.collectibles.filter((item) => item.collected).map((item) => item.id));
+    const coins = WORLD_3D.collectibles.filter((item) => item.kind === "coin" && collectedIds.has(item.id)).length;
     const starMedals = this.world.collectibles.filter((item) => item.collected && item.id.startsWith("star-medal")).length;
+    const moonShards = this.world.collectibles.filter((item) => item.collected && item.id.startsWith("moon-shard")).length;
+    const totalCoins = WORLD_3D.collectibles.filter((item) => item.kind === "coin").length;
+    const totalStarMedals = WORLD_3D.collectibles.filter((item) => item.kind === "star_medal").length;
+    const totalMoonShards = WORLD_3D.collectibles.filter((item) => item.kind === "moon_shard").length;
     const checkpointIndex = WORLD_3D.checkpoints.findIndex((item) => item.id === player.checkpointId);
+    const biome = this.biomeForZ(player.z);
+    const ratingPoints =
+      (starMedals === totalStarMedals ? 3 : Math.floor(starMedals / 2)) +
+      (moonShards === totalMoonShards ? 2 : Math.floor(moonShards / 3)) +
+      (player.deaths === 0 ? 2 : player.deaths <= 2 ? 1 : 0) +
+      (this.world.time <= 720 ? 2 : this.world.time <= 840 ? 1 : 0) +
+      (coins >= totalCoins * 0.6 ? 1 : 0);
+    const rating: EngineHud["rating"] = ratingPoints >= 9 ? "S" : ratingPoints >= 7 ? "A" : ratingPoints >= 4 ? "B" : "C";
     return {
       coins,
-      totalCoins: WORLD_3D.collectibles.filter((item) => item.kind === "coin").length,
+      totalCoins,
       starMedals,
-      totalStarMedals: WORLD_3D.collectibles.filter((item) => item.kind === "star_medal").length,
+      totalStarMedals,
+      moonShards,
+      totalMoonShards,
       lives: player.lives,
       deaths: player.deaths,
       score: player.score,
       elapsedMs: Math.round(this.world.time * 1000),
       timeRemaining: Math.max(0, WORLD_3D.metadata.timeLimitSeconds - Math.floor(this.world.time)),
       checkpoint: checkpointIndex + 1,
+      totalCheckpoints: WORLD_3D.checkpoints.length,
+      biome: biome.name,
+      biomeSubtitle: biome.subtitle,
+      objective: biome.objective,
+      dashReady: player.airDashAvailable,
+      rating,
       finished,
     };
+  }
+
+  private biomeForZ(z: number): BiomeZone {
+    return WORLD_3D.biomes.find((biome) => z >= biome.minimumZ && z < biome.maximumZ)
+      ?? WORLD_3D.biomes[WORLD_3D.biomes.length - 1];
+  }
+
+  private updateBiome(player: PlayerState3D, dt: number) {
+    const biome = this.biomeForZ(player.z);
+    const alpha = 1 - Math.exp(-dt * 1.45);
+    if (this.scene.background instanceof THREE.Color) {
+      this.scene.background.lerp(new THREE.Color(biome.sky.horizon), alpha);
+    }
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.color.lerp(new THREE.Color(biome.sky.fog), alpha);
+    }
+    if (this.skyMaterial) {
+      const top = this.skyMaterial.uniforms.topColor?.value as THREE.Color | undefined;
+      const bottom = this.skyMaterial.uniforms.bottomColor?.value as THREE.Color | undefined;
+      top?.lerp(new THREE.Color(biome.sky.zenith), alpha);
+      bottom?.lerp(new THREE.Color(biome.sky.horizon), alpha);
+    }
+    this.hemisphereLight.color.lerp(new THREE.Color(biome.ambient), alpha);
+    this.sunLight.color.lerp(new THREE.Color(biome.accent), alpha * 0.55);
+    const water = this.worldGroup.getObjectByName("shimmering-water");
+    if (water instanceof THREE.Mesh && water.material instanceof THREE.MeshPhysicalMaterial) {
+      const waterTarget = biome.id === "cocoa" ? new THREE.Color(0x7b3b42) : biome.id === "moon" ? new THREE.Color(0x414d9a) : new THREE.Color(WORLD_3D.theme.palette.water);
+      water.material.color.lerp(waterTarget, alpha * 0.45);
+    }
+  }
+
+  private updateFootsteps(player: PlayerState3D, time: number) {
+    const speed = Math.hypot(player.vx, player.vz);
+    if (!player.grounded || speed < 1.25 || player.status !== "active") return;
+    const interval = speed > 7.5 ? 250 : 360;
+    if (time - this.lastFootstepAt < interval) return;
+    this.lastFootstepAt = time;
+    const biome = this.biomeForZ(player.z);
+    const surface = player.groundObjectId
+      ? this.world.platforms.find((platform) => platform.id === player.groundObjectId)?.surface
+      : "normal";
+    this.audio.footstep(surface === "ice" || biome.id === "frost" ? "snow" : surface === "conveyor" || biome.id === "clockwork" || biome.id === "cocoa" ? "metal" : "grass");
   }
 
   private tryEnterTube() {
@@ -660,7 +813,7 @@ export class OreoGameEngine {
       mesh.visible = !item.collected;
       if (mesh.visible) {
         mesh.rotation.y = time * (item.id.startsWith("star-medal") ? 0.0014 : 0.0028);
-        mesh.position.y = (WORLD_3D.collectibles.find((entry) => entry.id === item.id)?.position.y ?? item.y) + Math.sin(time * 0.003 + item.x) * 0.12;
+        mesh.position.y = (Number(mesh.userData.baseY) || item.y) + Math.sin(time * 0.003 + item.x) * 0.12;
       }
     }
     for (const enemy of this.world.enemies) {
@@ -669,7 +822,13 @@ export class OreoGameEngine {
       mesh.visible = enemy.alive;
       mesh.position.set(enemy.x, enemy.y, enemy.z);
       mesh.rotation.y = enemy.patrolAxis === "x" ? (enemy.direction > 0 ? Math.PI / 2 : -Math.PI / 2) : (enemy.direction > 0 ? 0 : Math.PI);
-      mesh.position.y += Math.sin(time * 0.005 + enemy.x) * (enemy.id.includes("puff") || enemy.id.includes("cloud") ? 0.18 : 0.04);
+      mesh.position.y += Math.sin(time * 0.005 + enemy.x) * 0.04;
+    }
+    for (const hazard of this.world.hazards) {
+      const mesh = this.hazardMeshes.get(hazard.id);
+      if (!mesh) continue;
+      mesh.visible = hazard.active;
+      mesh.userData.hazardActive = hazard.active;
     }
   }
 
@@ -724,7 +883,7 @@ export class OreoGameEngine {
       const target = new THREE.Vector3(avatar.target.x, avatar.target.y, z);
       avatar.group.position.lerp(target, 1 - Math.exp(-dt * 12));
       avatar.group.rotation.y = THREE.MathUtils.lerp(avatar.group.rotation.y, avatar.target.facing, 1 - Math.exp(-dt * 10));
-      this.animateCharacter(avatar.group, avatar.target.vx, avatar.target.vy, avatar.target.vz ?? 0, avatar.target.action !== "jump", time);
+      this.animateCharacter(avatar.group, avatar.target.vx, avatar.target.vy, avatar.target.vz ?? 0, avatar.target.action !== "jump" && avatar.target.action !== "dash", time);
     }
   }
 
@@ -750,25 +909,29 @@ export class OreoGameEngine {
     if (leftLeg) leftLeg.rotation.x = stride;
     if (rightLeg) rightLeg.rotation.x = -stride;
     const body = group.getObjectByName("cookie-body");
-    if (body) body.rotation.z = grounded ? Math.sin(time * 0.006) * 0.025 : THREE.MathUtils.clamp(-vy * 0.012, -0.13, 0.13);
+    if (body) {
+      body.rotation.z = grounded ? Math.sin(time * 0.006) * 0.025 : THREE.MathUtils.clamp(-vy * 0.012, -0.13, 0.13);
+      const stretch = speed > 13 ? 1.12 : 1;
+      body.scale.lerp(new THREE.Vector3(stretch, speed > 13 ? 0.88 : 1, stretch), 0.24);
+    }
   }
 
   private setupLights() {
-    const hemisphere = new THREE.HemisphereLight(WORLD_3D.theme.light.ambient, 0x9f713f, WORLD_3D.theme.light.ambientIntensity);
-    this.scene.add(hemisphere);
-    const sun = new THREE.DirectionalLight(WORLD_3D.theme.light.sun, WORLD_3D.theme.light.sunIntensity);
-    sun.position.set(-75, 118, -35);
-    sun.target.position.set(10, 0, 55);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -130;
-    sun.shadow.camera.right = 130;
-    sun.shadow.camera.top = 185;
-    sun.shadow.camera.bottom = -135;
-    sun.shadow.camera.near = 10;
-    sun.shadow.camera.far = 310;
-    sun.shadow.bias = -0.00018;
-    this.scene.add(sun, sun.target);
+    this.hemisphereLight = new THREE.HemisphereLight(WORLD_3D.theme.light.ambient, 0x9f713f, WORLD_3D.theme.light.ambientIntensity);
+    this.scene.add(this.hemisphereLight);
+    this.sunLight = new THREE.DirectionalLight(WORLD_3D.theme.light.sun, WORLD_3D.theme.light.sunIntensity);
+    this.sunLight.position.set(-75, 118, 80);
+    this.sunLight.target.position.set(10, 0, 130);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.set(2048, 2048);
+    this.sunLight.shadow.camera.left = -150;
+    this.sunLight.shadow.camera.right = 150;
+    this.sunLight.shadow.camera.top = 220;
+    this.sunLight.shadow.camera.bottom = -180;
+    this.sunLight.shadow.camera.near = 10;
+    this.sunLight.shadow.camera.far = 420;
+    this.sunLight.shadow.bias = -0.00018;
+    this.scene.add(this.sunLight, this.sunLight.target);
   }
 
   private buildEnvironment() {
@@ -781,14 +944,14 @@ export class OreoGameEngine {
       clearcoat: 0.75,
       clearcoatRoughness: 0.18,
     });
-    const water = new THREE.Mesh(new THREE.PlaneGeometry(320, 340, 14, 14), waterMaterial);
+    const water = new THREE.Mesh(new THREE.PlaneGeometry(360, 500, 18, 24), waterMaterial);
     water.rotation.x = -Math.PI / 2;
-    water.position.set(10, WORLD_3D.waterLevelY, 50);
+    water.position.set(10, WORLD_3D.waterLevelY, 120);
     water.receiveShadow = true;
     water.name = "shimmering-water";
     this.worldGroup.add(water);
 
-    const skyGeometry = new THREE.SphereGeometry(230, 32, 18);
+    const skyGeometry = new THREE.SphereGeometry(520, 36, 22);
     const skyMaterial = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
@@ -802,13 +965,16 @@ export class OreoGameEngine {
       fragmentShader: "uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPosition; void main(){ float h = normalize(vWorldPosition + vec3(0.0, offset, 0.0)).y; gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0); }",
     });
     const sky = new THREE.Mesh(skyGeometry, skyMaterial);
-    sky.position.y = -20;
+    sky.position.set(10, -20, 120);
+    this.skyMaterial = skyMaterial;
     this.scene.add(sky);
 
     const cloudPositions = [
       [-72, 21, -25, 1.6], [-45, 31, 12, 1.15], [-18, 25, 80, 1.5], [24, 34, -30, 1.3],
       [61, 22, -2, 1.55], [83, 36, 58, 1.2], [48, 25, 112, 1.7], [-64, 39, 105, 1.45],
       [-96, 29, 46, 1.2], [94, 28, -48, 1.4], [5, 42, 125, 1.05], [8, 29, -76, 1.6],
+      [-55, 35, 178, 1.5], [80, 30, 205, 1.25], [22, 42, 238, 1.4], [-70, 31, 270, 1.55],
+      [65, 38, 292, 1.35], [5, 47, 320, 1.2],
     ] as const;
     for (const [x, y, z, scale] of cloudPositions) {
       const cloud = this.createCloud(scale);
@@ -884,15 +1050,21 @@ export class OreoGameEngine {
       this.worldGroup.add(mesh);
     }
     for (const enemy of WORLD_3D.enemies) {
-      const mesh = this.createEnemy(enemy.kind);
+      const mesh = this.createEnemy(enemy.kind, enemy.id);
       mesh.position.set(enemy.position.x, enemy.position.y, enemy.position.z);
       this.enemyMeshes.set(enemy.id, mesh);
       this.worldGroup.add(mesh);
     }
     for (const hazard of WORLD_3D.hazards) {
-      if (hazard.kind !== "spikes") continue;
-      const mesh = this.createSpikes(hazard.size.x, hazard.size.z);
+      if (hazard.kind === "water" || hazard.kind === "void" || hazard.visual === "invisible") continue;
+      const mesh = hazard.kind === "spikes"
+        ? this.createSpikes(hazard.size.x, hazard.size.z)
+        : hazard.kind === "steam"
+          ? this.createSteamJet(hazard.size.x, hazard.size.y)
+          : this.createMoltenHazard(hazard.size.x, hazard.size.y, hazard.size.z);
       mesh.position.set(hazard.position.x, hazard.position.y - hazard.size.y / 2, hazard.position.z);
+      mesh.name = hazard.id;
+      this.hazardMeshes.set(hazard.id, mesh);
       this.worldGroup.add(mesh);
     }
     for (const checkpoint of WORLD_3D.checkpoints) {
@@ -908,6 +1080,7 @@ export class OreoGameEngine {
       mesh.scale.set(decoration.scale.x, decoration.scale.y, decoration.scale.z);
       this.worldGroup.add(mesh);
     }
+    for (const prop of WORLD_3D.assetProps) this.loadAssetProp(prop);
     const goal = this.createGoal();
     goal.position.set(WORLD_3D.goal.position.x, WORLD_3D.goal.position.y - WORLD_3D.goal.size.y / 2, WORLD_3D.goal.position.z);
     goal.rotation.y = WORLD_3D.goal.facingYawRadians;
@@ -915,12 +1088,18 @@ export class OreoGameEngine {
   }
 
   private makeTexture(url: string, repeatX: number, repeatY: number) {
+    const roundedX = Math.max(0.25, Math.round(repeatX * 2) / 2);
+    const roundedY = Math.max(0.25, Math.round(repeatY * 2) / 2);
+    const key = `${url}|${roundedX}|${roundedY}`;
+    const cached = this.textureCache.get(key);
+    if (cached) return cached;
     const texture = new THREE.TextureLoader().load(url);
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(Math.max(0.25, repeatX), Math.max(0.25, repeatY));
+    texture.repeat.set(roundedX, roundedY);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+    this.textureCache.set(key, texture);
     return texture;
   }
 
@@ -928,13 +1107,34 @@ export class OreoGameEngine {
     const group = new THREE.Group();
     const isGrass = materialName === "felt_grass" || materialName === "felt_grass_high";
     const isStone = materialName === "cream_stone" || materialName === "sunstone";
-    const baseTexture = this.makeTexture("/textures/soil-felt.png", size.x / 6, size.y / 4);
-    const baseColor = materialName === "cream_stone" ? 0xfff1d0 : materialName === "sunstone" ? 0xf2b948 : materialName === "toy_metal" ? 0x83d9e9 : 0xe0aa48;
-    const baseMaterial = new THREE.MeshStandardMaterial({
-      map: isGrass ? baseTexture : null,
+    const isMetal = materialName === "toy_metal" || materialName === "clockwork_brass";
+    const isIce = materialName === "frosted_ice";
+    const isCocoa = materialName === "cocoa_wafer";
+    const isLavaRock = materialName === "lava_rock";
+    const isMoon = materialName === "moonstone";
+    const isGlass = materialName === "cloud_glass";
+    const baseTexture = isGrass || isCocoa
+      ? this.makeTexture("/textures/soil-felt.png", size.x / 6, size.y / 4)
+      : null;
+    const baseColor = materialName === "cream_stone" ? 0xfff1d0
+      : materialName === "sunstone" ? 0xf2b948
+        : materialName === "toy_metal" ? 0x83d9e9
+          : materialName === "clockwork_brass" ? 0xb7782f
+            : isIce ? 0x88dff2
+              : isCocoa ? 0x713b2d
+                : isLavaRock ? 0x3b2730
+                  : isMoon ? 0x878bd5
+                    : isGlass ? 0xbdefff
+                      : 0xe0aa48;
+    const baseMaterial = isGlass
+      ? new THREE.MeshPhysicalMaterial({ color: baseColor, transparent: true, opacity: 0.62, transmission: 0.35, roughness: 0.12, metalness: 0.02, clearcoat: 0.8 })
+      : new THREE.MeshStandardMaterial({
+      map: isGrass || isCocoa ? baseTexture : null,
       color: baseColor,
-      roughness: isStone ? 0.75 : 0.96,
-      metalness: materialName === "toy_metal" ? 0.28 : 0,
+      roughness: isStone ? 0.75 : isMetal ? 0.42 : isIce ? 0.2 : isMoon ? 0.52 : 0.96,
+      metalness: isMetal ? 0.48 : isMoon ? 0.08 : 0,
+      emissive: isLavaRock ? 0x22050a : isMoon ? 0x20275f : 0x000000,
+      emissiveIntensity: isLavaRock ? 0.35 : isMoon ? 0.16 : 0,
     });
     const base = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z, 1, 1, 1), baseMaterial);
     base.castShadow = true;
@@ -958,13 +1158,55 @@ export class OreoGameEngine {
       edge.position.y = size.y / 2 - 0.03;
       edge.receiveShadow = true;
       group.add(edge);
-    } else if (materialName === "toy_metal") {
+    } else if (isMetal) {
       const trim = new THREE.Mesh(
         new THREE.BoxGeometry(size.x * 0.84, 0.16, size.z * 0.84),
-        new THREE.MeshStandardMaterial({ color: 0xfaf1d4, metalness: 0.1, roughness: 0.55 }),
+        new THREE.MeshStandardMaterial({ color: materialName === "clockwork_brass" ? 0xffcf67 : 0xfaf1d4, metalness: 0.32, roughness: 0.4 }),
       );
       trim.position.y = size.y / 2 + 0.07;
       group.add(trim);
+      const rivetMaterial = new THREE.MeshStandardMaterial({ color: 0x5b6470, metalness: 0.72, roughness: 0.24 });
+      for (const [x, z] of [[-0.38, -0.38], [0.38, -0.38], [-0.38, 0.38], [0.38, 0.38]] as const) {
+        const rivet = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.08, 10), rivetMaterial);
+        rivet.position.set(x * size.x, size.y / 2 + 0.17, z * size.z);
+        group.add(rivet);
+      }
+    } else if (isIce) {
+      const cap = new THREE.Mesh(
+        new THREE.BoxGeometry(Math.max(0.3, size.x - 0.12), 0.22, Math.max(0.3, size.z - 0.12)),
+        new THREE.MeshPhysicalMaterial({ color: 0xc9f7ff, transparent: true, opacity: 0.78, transmission: 0.35, roughness: 0.08, clearcoat: 1 }),
+      );
+      cap.position.y = size.y / 2 + 0.08;
+      cap.receiveShadow = true;
+      group.add(cap);
+    } else if (isCocoa) {
+      const cream = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x + 0.04, 0.22, size.z + 0.04),
+        new THREE.MeshStandardMaterial({ color: 0xf4e5c5, roughness: 0.82 }),
+      );
+      cream.position.y = size.y / 2 - 0.06;
+      group.add(cream);
+      const wafer = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x * 0.96, 0.18, size.z * 0.96),
+        new THREE.MeshStandardMaterial({ map: baseTexture, color: 0x8c5035, roughness: 0.94 }),
+      );
+      wafer.position.y = size.y / 2 + 0.11;
+      group.add(wafer);
+    } else if (isLavaRock) {
+      const glow = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x * 0.72, 0.09, Math.max(0.12, size.z * 0.08)),
+        new THREE.MeshStandardMaterial({ color: 0xff6a33, emissive: 0xff2b0a, emissiveIntensity: 1.7, roughness: 0.5 }),
+      );
+      glow.position.set(size.x * 0.08, size.y / 2 + 0.07, -size.z * 0.1);
+      glow.rotation.y = 0.32;
+      group.add(glow);
+    } else if (isMoon || isGlass) {
+      const cap = new THREE.Mesh(
+        new THREE.BoxGeometry(Math.max(0.3, size.x - edgeRadius * 0.2), 0.18, Math.max(0.3, size.z - edgeRadius * 0.2)),
+        new THREE.MeshStandardMaterial({ color: isGlass ? 0xe7fbff : 0xc4c4ff, emissive: isGlass ? 0x2b7995 : 0x4c4e9a, emissiveIntensity: 0.32, roughness: 0.38, transparent: isGlass, opacity: isGlass ? 0.78 : 1 }),
+      );
+      cap.position.y = size.y / 2 + 0.08;
+      group.add(cap);
     }
     return group;
   }
@@ -996,9 +1238,13 @@ export class OreoGameEngine {
     geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
+    const roadColor = road.id.includes("frost") ? 0xb8efff
+      : road.id.includes("cocoa") ? 0xd9783f
+        : road.id.includes("moon") ? 0xd8d0ff
+          : 0xffca49;
     const mesh = new THREE.Mesh(
       geometry,
-      new THREE.MeshStandardMaterial({ map: this.makeTexture("/textures/path-felt.png", 1, 1), color: 0xffca49, roughness: 1, side: THREE.DoubleSide }),
+      new THREE.MeshStandardMaterial({ map: this.makeTexture("/textures/path-felt.png", 1, 1), color: roadColor, roughness: 1, side: THREE.DoubleSide }),
     );
     mesh.receiveShadow = true;
     return mesh;
@@ -1240,6 +1486,21 @@ export class OreoGameEngine {
       group.add(star);
       const glow = new THREE.PointLight(0x80ff46, 0.9, 4);
       group.add(glow);
+    } else if (kind === "moon_shard") {
+      const shard = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.46, 1),
+        new THREE.MeshPhysicalMaterial({ color: 0xbceaff, emissive: 0x506bd8, emissiveIntensity: 0.72, roughness: 0.16, metalness: 0.08, transmission: 0.2, clearcoat: 1 }),
+      );
+      shard.scale.set(0.62, 1.35, 0.62);
+      shard.rotation.z = 0.32;
+      group.add(shard);
+      const orbit = new THREE.Mesh(
+        new THREE.TorusGeometry(0.58, 0.035, 8, 32),
+        new THREE.MeshBasicMaterial({ color: 0xe7f7ff, transparent: true, opacity: 0.82 }),
+      );
+      orbit.rotation.x = Math.PI / 2.8;
+      group.add(orbit);
+      group.add(new THREE.PointLight(0xa9d9ff, 1.1, 5));
     } else {
       const coin = new THREE.Mesh(
         new THREE.CylinderGeometry(0.34, 0.34, 0.1, 28),
@@ -1255,9 +1516,10 @@ export class OreoGameEngine {
     return group;
   }
 
-  private createEnemy(kind: string) {
+  private createEnemy(kind: string, id = "") {
     const group = new THREE.Group();
-    const brown = new THREE.MeshStandardMaterial({ color: kind === "tin_beetle" ? 0x5a8da0 : 0x8b4f2d, roughness: 0.8, metalness: kind === "tin_beetle" ? 0.38 : 0 });
+    const themedColor = id.includes("frost") ? 0x77cce8 : id.includes("cocoa") ? 0x9d4a2f : id.includes("moon") ? 0x7d78c9 : kind === "tin_beetle" ? 0x5a8da0 : 0x8b4f2d;
+    const brown = new THREE.MeshStandardMaterial({ color: themedColor, roughness: 0.8, metalness: kind === "tin_beetle" ? 0.38 : 0 });
     const body = new THREE.Mesh(kind === "spring_puff" || kind === "cloud_mite" ? new THREE.SphereGeometry(0.48, 18, 12) : new THREE.CapsuleGeometry(0.42, 0.22, 6, 16), brown);
     body.scale.set(1.15, kind === "tin_beetle" ? 0.7 : 0.9, 1);
     body.castShadow = true;
@@ -1285,7 +1547,111 @@ export class OreoGameEngine {
       spring.position.y = -0.39;
       group.add(spring);
     }
+    if (kind === "tin_beetle") {
+      for (const x of [-0.28, 0.28]) {
+        const horn = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.42, 8), new THREE.MeshStandardMaterial({ color: 0xf6d27a, metalness: 0.5, roughness: 0.35 }));
+        horn.position.set(x, 0.16, 0.48);
+        horn.rotation.x = Math.PI / 2;
+        group.add(horn);
+      }
+    }
+    if (kind === "cloud_mite") {
+      for (const x of [-0.52, 0.52]) {
+        const wing = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 8), new THREE.MeshPhysicalMaterial({ color: 0xe9fbff, transparent: true, opacity: 0.72, roughness: 0.18 }));
+        wing.scale.set(0.45, 1, 1.4);
+        wing.position.set(x, 0.08, -0.05);
+        group.add(wing);
+      }
+    }
     return group;
+  }
+
+  private createSteamJet(width: number, height: number) {
+    const group = new THREE.Group();
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(width * 0.32, width * 0.42, 0.28, 20),
+      new THREE.MeshStandardMaterial({ color: 0x69727c, metalness: 0.68, roughness: 0.35 }),
+    );
+    base.position.y = 0.14;
+    group.add(base);
+    const material = new THREE.MeshPhysicalMaterial({ color: 0xeefcff, transparent: true, opacity: 0.48, roughness: 0.08, depthWrite: false });
+    for (let index = 0; index < 9; index += 1) {
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(0.35 + (index % 3) * 0.1, 12, 8), material.clone());
+      puff.name = "steam-particle";
+      puff.userData.phase = index / 9;
+      puff.userData.jetHeight = height;
+      group.add(puff);
+    }
+    const glow = new THREE.PointLight(0xbfeeff, 0.8, Math.max(4, height));
+    glow.position.y = 0.6;
+    group.add(glow);
+    return group;
+  }
+
+  private createMoltenHazard(width: number, height: number, depth: number) {
+    const group = new THREE.Group();
+    const molten = new THREE.MeshStandardMaterial({ color: 0xff6438, emissive: 0xd92309, emissiveIntensity: 1.35, roughness: 0.42, metalness: 0.06 });
+    if (width > 10 || depth > 10) {
+      const field = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth, 1, 1, 1), molten);
+      field.position.y = height / 2;
+      field.name = "molten-field";
+      group.add(field);
+      for (let index = 0; index < 18; index += 1) {
+        const bubble = new THREE.Mesh(new THREE.SphereGeometry(0.18 + index % 4 * 0.06, 10, 7), molten.clone());
+        bubble.position.set(((index * 7) % 17) / 16 * width - width / 2, height + 0.05, ((index * 11) % 19) / 18 * depth - depth / 2);
+        bubble.name = "lava-bubble";
+        bubble.userData.phase = index * 0.73;
+        group.add(bubble);
+      }
+    } else {
+      const vent = new THREE.Mesh(new THREE.CylinderGeometry(width * 0.34, width * 0.46, 0.35, 18), new THREE.MeshStandardMaterial({ color: 0x422c31, roughness: 0.9 }));
+      vent.position.y = 0.18;
+      group.add(vent);
+      for (let index = 0; index < 8; index += 1) {
+        const drop = new THREE.Mesh(new THREE.SphereGeometry(0.18 + index % 3 * 0.05, 10, 7), molten.clone());
+        drop.name = "lava-particle";
+        drop.userData.phase = index / 8;
+        drop.userData.jetHeight = height;
+        group.add(drop);
+      }
+      group.add(new THREE.PointLight(0xff562c, 1.9, Math.max(5, height * 1.2)));
+    }
+    return group;
+  }
+
+  private loadAssetProp(prop: AssetProp) {
+    this.gltfLoader.load(
+      `/models/kenney-platformer/${prop.kind}.glb`,
+      (gltf) => {
+        if (this.destroyed) {
+          this.disposeObjectResources(gltf.scene);
+          return;
+        }
+        const object = gltf.scene;
+        object.name = prop.id;
+        object.position.set(prop.position.x, prop.position.y, prop.position.z);
+        object.scale.set(prop.scale.x, prop.scale.y, prop.scale.z);
+        object.rotation.y = prop.yawRadians;
+        object.userData.assetAnimation = prop.animation ?? "none";
+        object.userData.baseY = prop.position.y;
+        object.traverse((child) => {
+          if (!(child instanceof THREE.Mesh)) return;
+          child.castShadow = true;
+          child.receiveShadow = true;
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          for (const material of materials) {
+            if (material instanceof THREE.MeshStandardMaterial) {
+              material.roughness = Math.max(0.48, material.roughness);
+            }
+          }
+        });
+        if (object.userData.assetAnimation !== "none") this.animatedScenery.add(object);
+        this.assetPropMeshes.set(prop.id, object);
+        this.worldGroup.add(object);
+      },
+      undefined,
+      () => undefined,
+    );
   }
 
   private createSpikes(width: number, depth: number) {
@@ -1346,7 +1712,7 @@ export class OreoGameEngine {
 
   private createGoal() {
     const group = new THREE.Group();
-    const stone = new THREE.MeshStandardMaterial({ color: 0xffda52, emissive: 0x6b3900, emissiveIntensity: 0.18, roughness: 0.55, metalness: 0.05 });
+    const stone = new THREE.MeshStandardMaterial({ color: 0xc5c4ff, emissive: 0x454dba, emissiveIntensity: 0.35, roughness: 0.48, metalness: 0.08 });
     for (const x of [-2, 2]) {
       const pillar = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 3.5, 8, 16), stone);
       pillar.position.set(x, 2.25, 0);
@@ -1356,7 +1722,7 @@ export class OreoGameEngine {
     const arch = new THREE.Mesh(new THREE.TorusGeometry(2, 0.38, 12, 36, Math.PI), stone);
     arch.position.y = 4;
     group.add(arch);
-    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.2, 28), new THREE.MeshStandardMaterial({ color: 0xfff19a, emissive: 0xffb128, emissiveIntensity: 0.5, roughness: 0.34 }));
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.2, 28), new THREE.MeshStandardMaterial({ color: 0xfff2b8, emissive: 0x8a86ff, emissiveIntensity: 0.75, roughness: 0.28 }));
     disc.rotation.x = Math.PI / 2;
     disc.position.y = 3.85;
     group.add(disc);
@@ -1367,7 +1733,7 @@ export class OreoGameEngine {
       ray.rotation.z = angle - Math.PI / 2;
       group.add(ray);
     }
-    const light = new THREE.PointLight(0xffdf59, 2.1, 12);
+    const light = new THREE.PointLight(0xc0b9ff, 2.4, 14);
     light.position.y = 3.8;
     group.add(light);
     return group;
@@ -1494,9 +1860,112 @@ export class OreoGameEngine {
         group.add(sun);
         break;
       }
+      case "clockwork_gear": {
+        const gear = new THREE.Group();
+        gear.name = "spin-decoration";
+        gear.position.y = 1.25;
+        const metal = new THREE.MeshStandardMaterial({ color, metalness: 0.58, roughness: 0.34 });
+        gear.add(new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.18, 10, 28), metal));
+        gear.add(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.28, 16), metal));
+        gear.children[1].rotation.x = Math.PI / 2;
+        for (let index = 0; index < 12; index += 1) {
+          const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.38, 0.22), metal);
+          const angle = index * Math.PI / 6;
+          tooth.position.set(Math.cos(angle) * 0.91, Math.sin(angle) * 0.91, 0);
+          tooth.rotation.z = angle;
+          gear.add(tooth);
+        }
+        group.add(gear);
+        break;
+      }
+      case "frost_crystal": {
+        const crystalMaterial = new THREE.MeshPhysicalMaterial({ color, emissive: color.clone().multiplyScalar(0.35), emissiveIntensity: 0.52, transparent: true, opacity: 0.86, transmission: 0.28, roughness: 0.12, clearcoat: 1 });
+        for (const [x, z, height, tilt] of [[0, 0, 2.5, 0], [-0.48, 0.14, 1.7, -0.25], [0.46, -0.1, 1.9, 0.22], [0.12, 0.42, 1.35, -0.12]] as const) {
+          const shard = new THREE.Mesh(new THREE.ConeGeometry(0.34, height, 6), crystalMaterial);
+          shard.position.set(x, height / 2, z);
+          shard.rotation.z = tilt;
+          shard.castShadow = true;
+          group.add(shard);
+        }
+        break;
+      }
+      case "cocoa_arch": {
+        const wafer = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+        for (const x of [-1.15, 1.15]) {
+          const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.55, 3, 0.65), wafer);
+          pillar.position.set(x, 1.5, 0);
+          pillar.castShadow = true;
+          group.add(pillar);
+        }
+        const arch = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.29, 9, 28, Math.PI), wafer);
+        arch.position.y = 3;
+        group.add(arch);
+        break;
+      }
+      case "lava_vent": {
+        const rock = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.72, 0.46, 10), new THREE.MeshStandardMaterial({ color: 0x3b2930, roughness: 0.92 }));
+        rock.position.y = 0.23;
+        group.add(rock);
+        const glow = new THREE.Mesh(new THREE.CircleGeometry(0.38, 18), new THREE.MeshBasicMaterial({ color }));
+        glow.rotation.x = -Math.PI / 2;
+        glow.position.y = 0.47;
+        group.add(glow, new THREE.PointLight(color, 1.4, 5));
+        break;
+      }
+      case "moon_obelisk": {
+        const obelisk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.58, 3.4, 5), new THREE.MeshStandardMaterial({ color, emissive: color.clone().multiplyScalar(0.2), emissiveIntensity: 0.32, roughness: 0.5 }));
+        obelisk.position.y = 1.7;
+        obelisk.castShadow = true;
+        group.add(obelisk);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.46, 0.055, 8, 24), new THREE.MeshBasicMaterial({ color: 0xf8edba }));
+        ring.position.y = 2.35;
+        ring.rotation.x = Math.PI / 2;
+        ring.name = "spin-decoration";
+        group.add(ring);
+        break;
+      }
+      case "floating_lantern": {
+        const lantern = new THREE.Mesh(new THREE.DodecahedronGeometry(0.38, 0), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.9, roughness: 0.4 }));
+        lantern.name = "floating-decoration";
+        lantern.userData.baseY = 0;
+        group.add(lantern, new THREE.PointLight(color, 1.1, 6));
+        break;
+      }
       default: break;
     }
     return group;
+  }
+
+  private sceneryObjectIsAnimated(object: THREE.Object3D) {
+    return object.name === "spin-decoration" ||
+      object.name === "floating-decoration" ||
+      object.name === "steam-particle" ||
+      object.name === "lava-particle" ||
+      object.name === "lava-bubble" ||
+      object.name === "molten-field" ||
+      object.name === "boost-ring" ||
+      object.name === "boost-spring" ||
+      object.name === "wind-ring" ||
+      Boolean(object.userData.tubeCurve) ||
+      object.userData.assetAnimation === "spin" ||
+      object.userData.assetAnimation === "bob";
+  }
+
+  private indexAnimatedScenery() {
+    this.animatedScenery.clear();
+    this.worldGroup.traverse((object) => {
+      if (this.sceneryObjectIsAnimated(object)) this.animatedScenery.add(object);
+    });
+  }
+
+  private sceneryObjectIsVisible(object: THREE.Object3D) {
+    let current: THREE.Object3D | null = object;
+    while (current) {
+      if (!current.visible) return false;
+      if (current === this.worldGroup) return true;
+      current = current.parent;
+    }
+    return false;
   }
 
   private updateScenery(dt: number, time: number) {
@@ -1505,8 +1974,34 @@ export class OreoGameEngine {
       const material = water.material as THREE.MeshPhysicalMaterial;
       material.color.offsetHSL(Math.sin(time * 0.00035) * 0.00005, 0, Math.sin(time * 0.0005) * 0.00008);
     }
-    this.worldGroup.traverse((object) => {
+    for (const object of this.animatedScenery) {
+      if (!this.sceneryObjectIsVisible(object)) continue;
       if (object.name === "spin-decoration") object.rotation.z += dt * 1.25;
+      if (object.name === "floating-decoration") object.position.y = Number(object.userData.baseY) + Math.sin(time * 0.0024 + object.id) * 0.24;
+      if (object.userData.assetAnimation === "spin") object.rotation.y += dt * 2.2;
+      if (object.userData.assetAnimation === "bob") object.position.y = Number(object.userData.baseY) + Math.sin(time * 0.0022 + object.id) * 0.18;
+      if (object.name === "steam-particle") {
+        const phase = Number(object.userData.phase) || 0;
+        const progress = (time * 0.00072 + phase) % 1;
+        const height = Number(object.userData.jetHeight) || 4;
+        object.position.set(Math.sin(progress * 18 + phase * 8) * 0.22, 0.38 + progress * (height - 0.5), Math.cos(progress * 15 + phase * 6) * 0.22);
+        object.scale.setScalar(0.45 + progress * 1.15);
+        if (object instanceof THREE.Mesh && object.material instanceof THREE.MeshPhysicalMaterial) object.material.opacity = (1 - progress) * 0.52;
+      }
+      if (object.name === "lava-particle") {
+        const phase = Number(object.userData.phase) || 0;
+        const progress = (time * 0.00055 + phase) % 1;
+        const height = Number(object.userData.jetHeight) || 5;
+        object.position.set(Math.sin(progress * 15 + phase * 9) * 0.28, 0.4 + Math.sin(progress * Math.PI) * height, Math.cos(progress * 13 + phase * 7) * 0.28);
+        object.scale.setScalar(0.65 + Math.sin(progress * Math.PI) * 0.55);
+      }
+      if (object.name === "lava-bubble") {
+        const phase = Number(object.userData.phase) || 0;
+        object.scale.y = 0.55 + (Math.sin(time * 0.003 + phase) + 1) * 0.5;
+      }
+      if (object.name === "molten-field" && object instanceof THREE.Mesh && object.material instanceof THREE.MeshStandardMaterial) {
+        object.material.emissiveIntensity = 1.15 + Math.sin(time * 0.0028) * 0.22;
+      }
       if (object.name === "boost-ring") {
         const index = Number(object.userData.ringIndex) || 0;
         object.position.y = 0.57 + index * 0.08 + Math.sin(time * 0.006 + index) * 0.08;
@@ -1526,7 +2021,7 @@ export class OreoGameEngine {
         const progress = ((time * 0.00022 + Number(object.userData.tubeOffset)) % 1 + 1) % 1;
         object.position.copy(curve.getPointAt(progress));
       }
-    });
+    }
     for (const checkpoint of this.checkpointMeshes.values()) {
       const wheel = checkpoint.getObjectByName("checkpoint-wheel");
       if (wheel) wheel.rotation.z += dt * 0.8;

@@ -111,7 +111,14 @@ export type WorldMaterial =
   | "cream_stone"
   | "sunstone"
   | "cloud_glass"
-  | "toy_metal";
+  | "toy_metal"
+  | "clockwork_brass"
+  | "frosted_ice"
+  | "cocoa_wafer"
+  | "lava_rock"
+  | "moonstone";
+
+export type PlatformSurface = "normal" | "ice" | "conveyor";
 
 export type PlatformKind =
   | "start_island"
@@ -133,6 +140,8 @@ export interface StaticPlatform extends BoxVolume {
   readonly receivesShadow: boolean;
   readonly edgeRadius: number;
   readonly rotation?: Euler3;
+  readonly surface?: PlatformSurface;
+  readonly conveyorVelocity?: Pick<Vec3, "x" | "z">;
 }
 
 export interface Ramp extends BoxVolume {
@@ -166,6 +175,8 @@ export interface MovingPlatform extends BoxVolume {
   /** Authored initial centre; equal to `path.from`. */
   readonly position: Vec3;
   readonly path: MovingPlatformPath;
+  readonly surface?: PlatformSurface;
+  readonly conveyorVelocity?: Pick<Vec3, "x" | "z">;
 }
 
 export interface GroundRoad {
@@ -247,12 +258,23 @@ export interface CoinCollectible extends CollectibleBase {
 
 export interface StarMedalCollectible extends CollectibleBase {
   readonly kind: "star_medal";
-  readonly medalNumber: 1 | 2 | 3;
+  readonly medalNumber: 1 | 2 | 3 | 4 | 5;
 }
 
-export type Collectible = CoinCollectible | StarMedalCollectible;
+export interface MoonShardCollectible extends CollectibleBase {
+  readonly kind: "moon_shard";
+  readonly shardNumber: 1 | 2 | 3 | 4 | 5;
+}
 
-export type HazardKind = "water" | "spikes" | "void";
+export type Collectible = CoinCollectible | StarMedalCollectible | MoonShardCollectible;
+
+export type HazardKind = "water" | "spikes" | "steam" | "lava" | "void";
+
+export interface HazardSchedule {
+  readonly periodSeconds: number;
+  readonly activeSeconds: number;
+  readonly phaseSeconds: number;
+}
 
 export interface Hazard extends BoxVolume {
   readonly id: string;
@@ -260,12 +282,13 @@ export interface Hazard extends BoxVolume {
   readonly damage: number;
   readonly instantRespawn: boolean;
   readonly active: boolean;
-  readonly visual: "shimmering_water" | "felt_spikes" | "invisible";
+  readonly visual: "shimmering_water" | "felt_spikes" | "steam_jet" | "molten_cocoa" | "invisible";
+  readonly schedule?: HazardSchedule;
 }
 
 export interface Checkpoint extends BoxVolume {
   readonly id: string;
-  readonly order: 1 | 2 | 3 | 4;
+  readonly order: 1 | 2 | 3 | 4 | 5 | 6;
   readonly label: string;
   readonly respawnPosition: Vec3;
   readonly facingYawRadians: number;
@@ -304,7 +327,13 @@ export type DecorationKind =
   | "wind_sock"
   | "toy_block_stack"
   | "cloud_bush"
-  | "sun_banner";
+  | "sun_banner"
+  | "clockwork_gear"
+  | "frost_crystal"
+  | "cocoa_arch"
+  | "lava_vent"
+  | "moon_obelisk"
+  | "floating_lantern";
 
 export interface Decoration {
   readonly id: string;
@@ -323,12 +352,48 @@ export interface RouteNode {
   readonly expectedDirection: "east" | "west" | "north" | "south" | "up";
 }
 
+export type BiomeId = "meadow" | "clockwork" | "sky" | "frost" | "cocoa" | "moon";
+
+export interface BiomeZone {
+  readonly id: BiomeId;
+  readonly name: string;
+  readonly subtitle: string;
+  readonly objective: string;
+  readonly minimumZ: number;
+  readonly maximumZ: number;
+  readonly sky: { readonly zenith: string; readonly horizon: string; readonly fog: string };
+  readonly ambient: string;
+  readonly accent: string;
+}
+
+export type AssetPropKind =
+  | "barrel"
+  | "chest"
+  | "conveyor-belt"
+  | "flag"
+  | "mushrooms"
+  | "pipe"
+  | "rocks"
+  | "saw"
+  | "spring"
+  | "tree-pine-snow";
+
+export interface AssetProp {
+  readonly id: string;
+  readonly kind: AssetPropKind;
+  readonly position: Vec3;
+  readonly scale: Vec3;
+  readonly yawRadians: number;
+  readonly animation?: "spin" | "bob" | "none";
+}
+
 export interface World3DDefinition {
   readonly metadata: World3DMetadata;
   readonly bounds: World3DBounds;
   readonly gravity: number;
   readonly waterLevelY: number;
   readonly theme: World3DTheme;
+  readonly biomes: readonly BiomeZone[];
   readonly camera: CameraSpawn;
   readonly player: PlayerSpawn;
   readonly platforms: readonly StaticPlatform[];
@@ -344,6 +409,7 @@ export interface World3DDefinition {
   readonly hazards: readonly Hazard[];
   readonly checkpoints: readonly Checkpoint[];
   readonly decorations: readonly Decoration[];
+  readonly assetProps: readonly AssetProp[];
   readonly criticalRoute: readonly RouteNode[];
   readonly goal: Goal;
 }
@@ -496,6 +562,78 @@ const COINS: readonly CoinCollectible[] = [
   ]),
 ];
 
+const EXPEDITION_COINS: readonly CoinCollectible[] = [
+  ...coinTrail("frost-gate", [
+    { x: 18, y: 10.25, z: 160 }, { x: 18, y: 10.25, z: 166 },
+    { x: 18, y: 10.25, z: 171 }, { x: 20, y: 10.25, z: 176 },
+    { x: 25, y: 10.25, z: 179 },
+  ]),
+  ...coinTrail("ice-slalom", [
+    { x: 30, y: 10.25, z: 180 }, { x: 35, y: 10.25, z: 182 },
+    { x: 40, y: 10.25, z: 185 }, { x: 45, y: 10.25, z: 188 },
+    { x: 50, y: 10.25, z: 191 }, { x: 55, y: 10.25, z: 193 },
+    { x: 60, y: 10.25, z: 195 }, { x: 64, y: 10.25, z: 198 },
+  ]),
+  ...coinTrail("crystal-climb", [
+    { x: 58, y: 10.5, z: 202 }, { x: 56, y: 11.1, z: 205 },
+    { x: 53, y: 11.8, z: 208 }, { x: 50, y: 12.5, z: 211 },
+    { x: 47, y: 13.2, z: 214 }, { x: 42, y: 14.25, z: 217 },
+    { x: 36, y: 14.25, z: 218 }, { x: 30, y: 14.25, z: 220 },
+  ]),
+  ...coinTrail("cocoa-conveyor", [
+    { x: 25, y: 13.3, z: 227 }, { x: 20, y: 13.3, z: 231 },
+    { x: 14, y: 13.3, z: 233 }, { x: 8, y: 13.3, z: 235 },
+    { x: 2, y: 13.3, z: 237 }, { x: -4, y: 13.3, z: 239 },
+    { x: -10, y: 12.3, z: 241 }, { x: -16, y: 12.3, z: 243 },
+  ]),
+  ...coinTrail("molten-hop", [
+    { x: -24, y: 12.2, z: 247 }, { x: -29, y: 12.2, z: 251 },
+    { x: -34, y: 12.7, z: 255 }, { x: -39, y: 13.2, z: 259 },
+    { x: -36, y: 13.7, z: 264 }, { x: -30, y: 14.2, z: 268 },
+  ]),
+  ...coinTrail("moon-orbit", [
+    { x: -23, y: 14.25, z: 272 }, { x: -18, y: 14.25, z: 276 },
+    { x: -12, y: 15.25, z: 280 }, { x: -6, y: 15.8, z: 283 },
+    { x: 1, y: 16.25, z: 284 }, { x: 8, y: 16.9, z: 283 },
+    { x: 15, y: 17.25, z: 281 }, { x: 22, y: 17.25, z: 282 },
+    { x: 29, y: 17.25, z: 284 }, { x: 36, y: 17.25, z: 285 },
+  ]),
+];
+
+const EXPEDITION_PLATFORMS = [
+  { id: "frost-gate-step", kind: "stepping_stone", material: "moonstone", position: { x: 18, y: 8.4, z: 162 }, size: { x: 5.5, y: 1.2, z: 4.5 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.55 },
+  { id: "island-frost-gate", kind: "tower_island", material: "frosted_ice", position: { x: 18, y: 8, z: 174 }, size: { x: 23, y: 2, z: 18 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 1.35, surface: "ice" },
+  { id: "platform-ice-slalom-01", kind: "causeway", material: "frosted_ice", position: { x: 32, y: 8, z: 181 }, size: { x: 10, y: 2, z: 8 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.9, surface: "ice" },
+  { id: "platform-ice-slalom-02", kind: "causeway", material: "frosted_ice", position: { x: 43, y: 8, z: 186 }, size: { x: 10, y: 2, z: 8 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.9, surface: "ice" },
+  { id: "island-frost-cavern", kind: "tower_island", material: "frosted_ice", position: { x: 58, y: 8, z: 193 }, size: { x: 22, y: 2, z: 19 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 1.35, surface: "ice" },
+  { id: "crystal-step-01", kind: "stair", material: "moonstone", position: { x: 57, y: 8.35, z: 204 }, size: { x: 6, y: 1.3, z: 3.2 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.4 },
+  { id: "crystal-step-02", kind: "stair", material: "frosted_ice", position: { x: 54, y: 9.05, z: 207 }, size: { x: 5.5, y: 1.4, z: 3.2 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.4, surface: "ice" },
+  { id: "crystal-step-03", kind: "stair", material: "moonstone", position: { x: 51, y: 9.75, z: 210 }, size: { x: 5.5, y: 1.4, z: 3.2 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.4 },
+  { id: "crystal-step-04", kind: "stair", material: "frosted_ice", position: { x: 48, y: 10.45, z: 213 }, size: { x: 5.5, y: 1.4, z: 3.2 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.4, surface: "ice" },
+  { id: "crystal-step-05", kind: "stair", material: "moonstone", position: { x: 45, y: 11.15, z: 216 }, size: { x: 5.5, y: 1.4, z: 3.2 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.4 },
+  { id: "island-frost-summit", kind: "tower_island", material: "moonstone", position: { x: 35, y: 12, z: 219 }, size: { x: 25, y: 2, z: 16 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 1.45 },
+  { id: "cocoa-entry-step", kind: "stepping_stone", material: "cocoa_wafer", position: { x: 24, y: 11.5, z: 229 }, size: { x: 5.5, y: 1.4, z: 5.5 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.55 },
+  { id: "conveyor-cocoa-01", kind: "causeway", material: "clockwork_brass", position: { x: 15, y: 11, z: 233 }, size: { x: 15, y: 2, z: 7 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.55, surface: "conveyor", conveyorVelocity: { x: -2.4, z: 0.35 } },
+  { id: "conveyor-cocoa-02", kind: "causeway", material: "clockwork_brass", position: { x: 0, y: 11, z: 238 }, size: { x: 15, y: 2, z: 7 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.55, surface: "conveyor", conveyorVelocity: { x: -3.1, z: 0.2 } },
+  { id: "island-cocoa-furnace", kind: "workshop_island", material: "cocoa_wafer", position: { x: -17, y: 10, z: 243 }, size: { x: 21, y: 2, z: 19 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 1.35 },
+  { id: "lava-rock-01", kind: "stepping_stone", material: "lava_rock", position: { x: -29, y: 10, z: 252 }, size: { x: 6, y: 2, z: 6 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.85 },
+  { id: "lava-rock-02", kind: "stepping_stone", material: "lava_rock", position: { x: -39, y: 10.6, z: 259 }, size: { x: 6, y: 2, z: 6 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.85 },
+  { id: "lava-rock-03", kind: "stepping_stone", material: "lava_rock", position: { x: -31, y: 11.2, z: 267 }, size: { x: 6, y: 2, z: 6 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.85 },
+  { id: "island-moon-entry", kind: "tower_island", material: "moonstone", position: { x: -22, y: 12, z: 274 }, size: { x: 19, y: 2, z: 17 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 1.5 },
+  { id: "moon-step-01", kind: "stepping_stone", material: "cloud_glass", position: { x: -10, y: 13, z: 280 }, size: { x: 6, y: 1.4, z: 6 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.75 },
+  { id: "moon-step-02", kind: "stepping_stone", material: "moonstone", position: { x: 3, y: 14, z: 284 }, size: { x: 6, y: 1.4, z: 6 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.75 },
+  { id: "moon-step-03", kind: "stepping_stone", material: "cloud_glass", position: { x: 16, y: 15, z: 280 }, size: { x: 6, y: 1.4, z: 6 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 0.75 },
+  { id: "island-moon-temple", kind: "goal_island", material: "moonstone", position: { x: 35, y: 15, z: 284 }, size: { x: 29, y: 2, z: 23 }, collision: "solid", castsShadow: true, receivesShadow: true, edgeRadius: 1.9 },
+] as const satisfies readonly StaticPlatform[];
+
+const EXPEDITION_MOVING_PLATFORMS = [
+  { id: "moving-frost-secret", kind: "moving_platform", material: "frosted_ice", position: { x: 68, y: 9.25, z: 188 }, size: { x: 5, y: 0.8, z: 5 }, collision: "solid", castsShadow: true, surface: "ice", path: { from: { x: 68, y: 9.25, z: 188 }, to: { x: 80, y: 11.8, z: 190 }, travelSeconds: 3.1, waitAtEndsSeconds: 0.45, phase: 0.17, easing: "smoothstep" } },
+  { id: "moving-crystal-elevator", kind: "moving_platform", material: "moonstone", position: { x: 61, y: 9.3, z: 203 }, size: { x: 5.5, y: 0.8, z: 5.5 }, collision: "solid", castsShadow: true, path: { from: { x: 61, y: 9.3, z: 203 }, to: { x: 51, y: 12.1, z: 214 }, travelSeconds: 3.5, waitAtEndsSeconds: 0.5, phase: 0.52, easing: "smoothstep" } },
+  { id: "moving-cocoa-cargo", kind: "moving_platform", material: "clockwork_brass", position: { x: -27, y: 12, z: 249 }, size: { x: 5.5, y: 0.8, z: 5.5 }, collision: "solid", castsShadow: true, surface: "conveyor", conveyorVelocity: { x: -1.5, z: 0 }, path: { from: { x: -27, y: 12, z: 249 }, to: { x: -38, y: 12.6, z: 255 }, travelSeconds: 2.8, waitAtEndsSeconds: 0.25, phase: 0.29, easing: "smoothstep" } },
+  { id: "moving-moon-orbit-01", kind: "moving_platform", material: "cloud_glass", position: { x: -15, y: 14.2, z: 281 }, size: { x: 5.5, y: 0.8, z: 5.5 }, collision: "solid", castsShadow: true, path: { from: { x: -15, y: 14.2, z: 281 }, to: { x: -4, y: 15.2, z: 288 }, travelSeconds: 2.7, waitAtEndsSeconds: 0.3, phase: 0.1, easing: "smoothstep" } },
+  { id: "moving-moon-orbit-02", kind: "moving_platform", material: "moonstone", position: { x: 8.5, y: 15.4, z: 286 }, size: { x: 5.5, y: 0.8, z: 5.5 }, collision: "solid", castsShadow: true, path: { from: { x: 8.5, y: 15.4, z: 286 }, to: { x: 15, y: 16.4, z: 277 }, travelSeconds: 2.4, waitAtEndsSeconds: 0.25, phase: 0.61, easing: "smoothstep" } },
+] as const satisfies readonly MovingPlatform[];
+
 /**
  * World 1-1 — “晴空绒线庭”
  *
@@ -505,20 +643,20 @@ const COINS: readonly CoinCollectible[] = [
  */
 export const WORLD_3D = {
   metadata: {
-    id: "world-01-felt-sky-garden",
-    name: "晴空绒线庭",
-    subtitle: "绕过翠绿庭院，攀上云端太阳门",
+    id: "world-01-six-realms-expedition",
+    name: "六境奥利奥远征",
+    subtitle: "穿过花庭、工坊、霜谷、熔炉与月光城",
     description:
-      "一座漂浮在晴空水庭上的宽阔立体箱庭，路线在东西与南北方向间反复折返。",
-    estimatedSeconds: [420, 600],
-    difficulty: 4,
-    timeLimitSeconds: 720,
+      "一条拥有六种主题、隐藏支路与技巧挑战的立体远征路线，鼓励探索和重复挑战。",
+    estimatedSeconds: [660, 900],
+    difficulty: 5,
+    timeLimitSeconds: 960,
   },
   bounds: {
-    minimumX: -70,
-    maximumX: 100,
+    minimumX: -80,
+    maximumX: 110,
     minimumZ: -60,
-    maximumZ: 165,
+    maximumZ: 310,
     deathY: -10,
   },
   gravity: -28,
@@ -552,12 +690,20 @@ export const WORLD_3D = {
     textureScale: 5.5,
     edgeRoundness: 0.28,
   },
+  biomes: [
+    { id: "meadow", name: "绒线花庭", subtitle: "第一境 · 风与花的教学箱庭", objective: "越过花庭与高台，找到透明风带", minimumZ: -60, maximumZ: 86, sky: { zenith: "#249CFF", horizon: "#C9F2FF", fog: "#BDEAFF" }, ambient: "#BEE9FF", accent: "#FFD34E" },
+    { id: "clockwork", name: "饼干齿轮港", subtitle: "第二境 · 黄铜机关与弹簧货台", objective: "避开蒸汽节拍，踩弹簧鼓台升空", minimumZ: 86, maximumZ: 124, sky: { zenith: "#3E8FCE", horizon: "#FFD49B", fog: "#B7D5DD" }, ambient: "#FFD2A0", accent: "#F2A83B" },
+    { id: "sky", name: "逆风太阳堡", subtitle: "第三境 · 漂浮机关与横风考验", objective: "顶风穿过移动浮桥，抵达太阳堡", minimumZ: 124, maximumZ: 160, sky: { zenith: "#4179E8", horizon: "#D9F6FF", fog: "#C7E9F5" }, ambient: "#CFE8FF", accent: "#6FE5F3" },
+    { id: "frost", name: "奶油霜晶谷", subtitle: "第四境 · 冰面惯性与晶体阶梯", objective: "控制滑行节奏，攀上霜晶峰顶", minimumZ: 160, maximumZ: 226, sky: { zenith: "#4A65C8", horizon: "#D9F7FF", fog: "#BFD8F4" }, ambient: "#C8E7FF", accent: "#92F1FF" },
+    { id: "cocoa", name: "焦糖可可熔炉", subtitle: "第五境 · 传送带、蒸汽与熔岩捷径", objective: "借货运带穿过熔炉，踏过熔岩石阵", minimumZ: 226, maximumZ: 270, sky: { zenith: "#653F78", horizon: "#FFB46E", fog: "#B77565" }, ambient: "#FFB67E", accent: "#FF7448" },
+    { id: "moon", name: "云顶月光城", subtitle: "终境 · 轨道浮台与最终之门", objective: "连续飞跃月轨浮台，登上月光神殿", minimumZ: 270, maximumZ: 311, sky: { zenith: "#25285F", horizon: "#9AA8F4", fog: "#777FC4" }, ambient: "#B9C6FF", accent: "#FFF0A8" },
+  ],
   camera: {
     position: { x: -62, y: 13, z: -58 },
     lookAt: { x: -48, y: 1, z: -41 },
     fovDegrees: 52,
     near: 0.1,
-    far: 420,
+    far: 650,
     followDistance: 13,
     followHeight: 6.5,
     minimumPitchRadians: -1.05,
@@ -761,7 +907,7 @@ export const WORLD_3D = {
     {
       id: "causeway-clockwork-01",
       kind: "causeway",
-      material: "cream_stone",
+      material: "clockwork_brass",
       position: { x: 57, y: 2, z: 87 },
       size: { x: 5, y: 1.4, z: 5 },
       collision: "solid",
@@ -772,7 +918,7 @@ export const WORLD_3D = {
     {
       id: "causeway-clockwork-02",
       kind: "causeway",
-      material: "sunstone",
+      material: "cocoa_wafer",
       position: { x: 62, y: 2.4, z: 91 },
       size: { x: 5, y: 1.4, z: 5 },
       collision: "solid",
@@ -794,13 +940,15 @@ export const WORLD_3D = {
     {
       id: "island-clockwork-harbor",
       kind: "workshop_island",
-      material: "felt_grass_high",
+      material: "clockwork_brass",
       position: { x: 78, y: 2, z: 103 },
       size: { x: 22, y: 2, z: 20 },
       collision: "solid",
       castsShadow: true,
       receivesShadow: true,
       edgeRadius: 1.55,
+      surface: "conveyor",
+      conveyorVelocity: { x: 0, z: 1.25 },
     },
     {
       id: "ledge-wind-launch",
@@ -849,7 +997,7 @@ export const WORLD_3D = {
     {
       id: "island-sun-citadel",
       kind: "goal_island",
-      material: "felt_grass_high",
+      material: "cloud_glass",
       position: { x: 18, y: 8, z: 147 },
       size: { x: 28, y: 2, z: 24 },
       collision: "solid",
@@ -857,6 +1005,7 @@ export const WORLD_3D = {
       receivesShadow: true,
       edgeRadius: 1.8,
     },
+    ...EXPEDITION_PLATFORMS,
   ],
   ramps: [
     {
@@ -1027,6 +1176,7 @@ export const WORLD_3D = {
         easing: "smoothstep",
       },
     },
+    ...EXPEDITION_MOVING_PLATFORMS,
   ],
   roads: [
     {
@@ -1192,6 +1342,38 @@ export const WORLD_3D = {
       edgeColor: "#D49A27",
       closed: false,
     },
+    {
+      id: "road-frost-gate",
+      points: [
+        { x: 18, y: 9.07, z: 165 }, { x: 18, y: 9.07, z: 171 },
+        { x: 22, y: 9.07, z: 176 }, { x: 28, y: 9.07, z: 179 },
+      ],
+      width: 3.5, thickness: 0.12, material: "golden_felt_path", edgeColor: "#8DE8FF", closed: false,
+    },
+    {
+      id: "road-frost-summit",
+      points: [
+        { x: 44, y: 13.07, z: 216 }, { x: 39, y: 13.07, z: 219 },
+        { x: 33, y: 13.07, z: 219 }, { x: 27, y: 13.07, z: 222 },
+      ],
+      width: 3.4, thickness: 0.12, material: "golden_felt_path", edgeColor: "#A6CFFF", closed: false,
+    },
+    {
+      id: "road-cocoa-furnace",
+      points: [
+        { x: -8, y: 11.07, z: 239 }, { x: -12, y: 11.07, z: 241 },
+        { x: -17, y: 11.07, z: 243 }, { x: -22, y: 11.07, z: 246 },
+      ],
+      width: 3.2, thickness: 0.12, material: "golden_felt_path", edgeColor: "#E46F38", closed: false,
+    },
+    {
+      id: "road-moon-temple",
+      points: [
+        { x: 21, y: 16.07, z: 281 }, { x: 27, y: 16.07, z: 283 },
+        { x: 34, y: 16.07, z: 284 }, { x: 42, y: 16.07, z: 285 },
+      ],
+      width: 3.6, thickness: 0.12, material: "golden_felt_path", edgeColor: "#D7D0FF", closed: false,
+    },
   ],
   fences: [
     {
@@ -1351,6 +1533,25 @@ export const WORLD_3D = {
       bidirectional: true,
       collision: "tube_trigger",
     },
+    {
+      id: "aero-ribbon-frost-secret",
+      kind: "aero_ribbon_tube",
+      points: [
+        { x: 80, y: 12.8, z: 190 }, { x: 75, y: 16, z: 198 },
+        { x: 65, y: 18, z: 207 }, { x: 53, y: 16.5, z: 214 },
+        { x: 42, y: 14.2, z: 219 },
+      ],
+      radius: 1.25,
+      wallThickness: 0.08,
+      color: "#D8F7FF",
+      flowColor: "#B4A9FF",
+      opacity: 0.32,
+      entry: { position: { x: 80, y: 12.8, z: 190 }, size: { x: 3.2, y: 3.2, z: 3.2 } },
+      exit: { position: { x: 42, y: 14.2, z: 219 }, size: { x: 3.2, y: 3.2, z: 3.2 } },
+      travelSeconds: 3.1,
+      bidirectional: true,
+      collision: "tube_trigger",
+    },
   ],
   boostPads: [
     {
@@ -1369,6 +1570,22 @@ export const WORLD_3D = {
       cooldownSeconds: 1,
       color: "#69E7F4",
     },
+    {
+      id: "boost-frost-secret",
+      position: { x: 64, y: 9.6, z: 187 },
+      size: { x: 3.5, y: 1.2, z: 3.5 },
+      launchVelocity: { x: 10.5, y: 12.5, z: 1.5 },
+      cooldownSeconds: 1,
+      color: "#91EEFF",
+    },
+    {
+      id: "boost-cocoa-loft",
+      position: { x: -12, y: 11.55, z: 248 },
+      size: { x: 3.5, y: 1.2, z: 3.5 },
+      launchVelocity: { x: 3.5, y: 15.5, z: 3.5 },
+      cooldownSeconds: 1.05,
+      color: "#FF8050",
+    },
   ],
   windZones: [
     {
@@ -1377,6 +1594,13 @@ export const WORLD_3D = {
       size: { x: 35, y: 8, z: 13 },
       force: { x: -3.2, y: 0, z: 2.4 },
       color: "#C9F8FF",
+    },
+    {
+      id: "wind-moon-orbit",
+      position: { x: 2, y: 17, z: 282 },
+      size: { x: 34, y: 10, z: 18 },
+      force: { x: 2.2, y: 0.35, z: -2.6 },
+      color: "#DAD7FF",
     },
   ],
   enemies: [
@@ -1545,9 +1769,45 @@ export const WORLD_3D = {
       canBeBouncedOn: true,
       scoreValue: 400,
     },
+    {
+      id: "enemy-frost-puff-01", kind: "spring_puff", position: { x: 28, y: 9.7, z: 175 },
+      colliderSize: { x: 1.2, y: 1.4, z: 1.2 }, patrol: { axis: "x", minimum: 10, maximum: 28, speed: 2.1, pauseAtTurnSeconds: 0.2 },
+      behavior: "hop", contactDamage: 1, canBeBouncedOn: true, scoreValue: 350,
+    },
+    {
+      id: "enemy-frost-cloud-01", kind: "cloud_mite", position: { x: 55, y: 10.2, z: 194 },
+      colliderSize: { x: 1.35, y: 1.35, z: 1.35 }, patrol: { axis: "z", minimum: 186, maximum: 200, speed: 2.25, pauseAtTurnSeconds: 0.18 },
+      behavior: "float", contactDamage: 1, canBeBouncedOn: true, scoreValue: 450,
+    },
+    {
+      id: "enemy-frost-beetle-01", kind: "tin_beetle", position: { x: 34, y: 13.55, z: 219 },
+      colliderSize: { x: 1.45, y: 1.1, z: 1.25 }, patrol: { axis: "x", minimum: 26, maximum: 43, speed: 2.8, pauseAtTurnSeconds: 0.1 },
+      behavior: "charge", contactDamage: 1, canBeBouncedOn: true, scoreValue: 500,
+    },
+    {
+      id: "enemy-cocoa-crumb-01", kind: "crumb_trundler", position: { x: -14, y: 11.65, z: 242 },
+      colliderSize: { x: 1.25, y: 1.3, z: 1.25 }, patrol: { axis: "z", minimum: 236, maximum: 249, speed: 2.15, pauseAtTurnSeconds: 0.18 },
+      behavior: "walk", contactDamage: 1, canBeBouncedOn: true, scoreValue: 350,
+    },
+    {
+      id: "enemy-cocoa-beetle-01", kind: "tin_beetle", position: { x: -20, y: 11.55, z: 247 },
+      colliderSize: { x: 1.45, y: 1.1, z: 1.25 }, patrol: { axis: "x", minimum: -24, maximum: -10, speed: 3, pauseAtTurnSeconds: 0.08 },
+      behavior: "charge", contactDamage: 1, canBeBouncedOn: true, scoreValue: 550,
+    },
+    {
+      id: "enemy-moon-cloud-01", kind: "cloud_mite", position: { x: -20, y: 14.1, z: 275 },
+      colliderSize: { x: 1.35, y: 1.35, z: 1.35 }, patrol: { axis: "x", minimum: -28, maximum: -14, speed: 2.55, pauseAtTurnSeconds: 0.12 },
+      behavior: "float", contactDamage: 1, canBeBouncedOn: true, scoreValue: 600,
+    },
+    {
+      id: "enemy-moon-puff-01", kind: "spring_puff", position: { x: 34, y: 16.7, z: 280 },
+      colliderSize: { x: 1.2, y: 1.4, z: 1.2 }, patrol: { axis: "z", minimum: 276, maximum: 292, speed: 2.45, pauseAtTurnSeconds: 0.12 },
+      behavior: "hop", contactDamage: 1, canBeBouncedOn: true, scoreValue: 650,
+    },
   ],
   collectibles: [
     ...COINS,
+    ...EXPEDITION_COINS,
     {
       id: "star-medal-01-garden",
       kind: "star_medal",
@@ -1575,13 +1835,41 @@ export const WORLD_3D = {
       spinRadiansPerSecond: 1.8,
       scoreValue: 1000,
     },
+    {
+      id: "star-medal-04-frost-secret", kind: "star_medal", medalNumber: 4,
+      position: { x: 80, y: 14.1, z: 190 }, pickupRadius: 1.1, spinRadiansPerSecond: 1.8, scoreValue: 1400,
+    },
+    {
+      id: "star-medal-05-cocoa-loft", kind: "star_medal", medalNumber: 5,
+      position: { x: -10, y: 16.5, z: 251 }, pickupRadius: 1.1, spinRadiansPerSecond: 1.8, scoreValue: 1600,
+    },
+    {
+      id: "moon-shard-01-meadow", kind: "moon_shard", shardNumber: 1,
+      position: { x: -55, y: 2.2, z: -33 }, pickupRadius: 0.95, spinRadiansPerSecond: 2.2, scoreValue: 750,
+    },
+    {
+      id: "moon-shard-02-clockwork", kind: "moon_shard", shardNumber: 2,
+      position: { x: 86, y: 6.2, z: 96 }, pickupRadius: 0.95, spinRadiansPerSecond: 2.2, scoreValue: 750,
+    },
+    {
+      id: "moon-shard-03-sky", kind: "moon_shard", shardNumber: 3,
+      position: { x: 11.3, y: 13.9, z: 140 }, pickupRadius: 0.95, spinRadiansPerSecond: 2.2, scoreValue: 750,
+    },
+    {
+      id: "moon-shard-04-frost", kind: "moon_shard", shardNumber: 4,
+      position: { x: 42, y: 14.4, z: 219 }, pickupRadius: 0.95, spinRadiansPerSecond: 2.2, scoreValue: 750,
+    },
+    {
+      id: "moon-shard-05-moon", kind: "moon_shard", shardNumber: 5,
+      position: { x: 42, y: 20, z: 290 }, pickupRadius: 0.95, spinRadiansPerSecond: 2.2, scoreValue: 750,
+    },
   ],
   hazards: [
     {
       id: "hazard-water-basin",
       kind: "water",
-      position: { x: 10, y: -3.2, z: 50 },
-      size: { x: 210, y: 2, z: 230 },
+      position: { x: 10, y: -3.2, z: 120 },
+      size: { x: 230, y: 2, z: 390 },
       damage: 1,
       instantRespawn: true,
       active: true,
@@ -1658,10 +1946,68 @@ export const WORLD_3D = {
       visual: "felt_spikes",
     },
     {
+      id: "hazard-steam-clockwork-01", kind: "steam",
+      position: { x: 78, y: 5.2, z: 104 }, size: { x: 3.2, y: 4.4, z: 3.2 },
+      damage: 1, instantRespawn: false, active: true, visual: "steam_jet",
+      schedule: { periodSeconds: 3.2, activeSeconds: 1.25, phaseSeconds: 0.35 },
+    },
+    {
+      id: "hazard-steam-clockwork-02", kind: "steam",
+      position: { x: 83, y: 5.2, z: 108 }, size: { x: 3.2, y: 4.4, z: 3.2 },
+      damage: 1, instantRespawn: false, active: true, visual: "steam_jet",
+      schedule: { periodSeconds: 3.2, activeSeconds: 1.25, phaseSeconds: 1.95 },
+    },
+    {
+      id: "hazard-frost-pulse-01", kind: "spikes",
+      position: { x: 42, y: 9.35, z: 185 }, size: { x: 3.8, y: 0.7, z: 3.8 },
+      damage: 1, instantRespawn: false, active: true, visual: "felt_spikes",
+      schedule: { periodSeconds: 2.8, activeSeconds: 1.15, phaseSeconds: 0.1 },
+    },
+    {
+      id: "hazard-frost-pulse-02", kind: "spikes",
+      position: { x: 57, y: 9.35, z: 195 }, size: { x: 3.8, y: 0.7, z: 3.8 },
+      damage: 1, instantRespawn: false, active: true, visual: "felt_spikes",
+      schedule: { periodSeconds: 2.8, activeSeconds: 1.15, phaseSeconds: 1.5 },
+    },
+    {
+      id: "hazard-steam-cocoa-01", kind: "steam",
+      position: { x: 8, y: 14.2, z: 234 }, size: { x: 3.2, y: 5, z: 3.2 },
+      damage: 1, instantRespawn: false, active: true, visual: "steam_jet",
+      schedule: { periodSeconds: 3, activeSeconds: 1.2, phaseSeconds: 0 },
+    },
+    {
+      id: "hazard-steam-cocoa-02", kind: "steam",
+      position: { x: -3, y: 14.2, z: 239 }, size: { x: 3.2, y: 5, z: 3.2 },
+      damage: 1, instantRespawn: false, active: true, visual: "steam_jet",
+      schedule: { periodSeconds: 3, activeSeconds: 1.2, phaseSeconds: 1.5 },
+    },
+    {
+      id: "hazard-cocoa-lava-field", kind: "lava",
+      position: { x: -30, y: 8, z: 258 }, size: { x: 55, y: 1.6, z: 37 },
+      damage: 1, instantRespawn: true, active: true, visual: "molten_cocoa",
+    },
+    {
+      id: "hazard-lava-geyser-01", kind: "lava",
+      position: { x: -35, y: 12.8, z: 255 }, size: { x: 3.5, y: 6, z: 3.5 },
+      damage: 1, instantRespawn: false, active: true, visual: "molten_cocoa",
+      schedule: { periodSeconds: 3.6, activeSeconds: 1.1, phaseSeconds: 0.4 },
+    },
+    {
+      id: "hazard-lava-geyser-02", kind: "lava",
+      position: { x: -31, y: 13.5, z: 266 }, size: { x: 3.5, y: 6, z: 3.5 },
+      damage: 1, instantRespawn: false, active: true, visual: "molten_cocoa",
+      schedule: { periodSeconds: 3.6, activeSeconds: 1.1, phaseSeconds: 2.2 },
+    },
+    {
+      id: "hazard-clockwork-saw-01", kind: "spikes",
+      position: { x: 78, y: 4.1, z: 103 }, size: { x: 3, y: 2.1, z: 1.4 },
+      damage: 1, instantRespawn: true, active: true, visual: "invisible",
+    },
+    {
       id: "hazard-world-void",
       kind: "void",
-      position: { x: 10, y: -12, z: 50 },
-      size: { x: 230, y: 2, z: 250 },
+      position: { x: 10, y: -12, z: 120 },
+      size: { x: 250, y: 2, z: 410 },
       damage: 99,
       instantRespawn: true,
       active: true,
@@ -1709,6 +2055,16 @@ export const WORLD_3D = {
       facingYawRadians: 0,
       visual: "sun_pinwheel_flag",
     },
+    {
+      id: "checkpoint-frost-gate", order: 5, label: "霜晶谷门",
+      position: { x: 18, y: 10.5, z: 170 }, size: { x: 3.2, y: 3, z: 3.2 },
+      respawnPosition: { x: 18, y: 10.05, z: 168 }, facingYawRadians: 0, visual: "sun_pinwheel_flag",
+    },
+    {
+      id: "checkpoint-cocoa-furnace", order: 6, label: "可可熔炉",
+      position: { x: -17, y: 12.5, z: 240 }, size: { x: 3.2, y: 3, z: 3.2 },
+      respawnPosition: { x: -17, y: 12.05, z: 241 }, facingYawRadians: Math.PI, visual: "sun_pinwheel_flag",
+    },
   ],
   decorations: [
     { id: "sign-start", kind: "direction_sign", position: { x: -53, y: 0.8, z: -35 }, scale: { x: 1, y: 1, z: 1 }, yawRadians: 0.2, label: "绵风庭院 →" },
@@ -1748,6 +2104,38 @@ export const WORLD_3D = {
     { id: "tree-citadel-02", kind: "felt_tree", position: { x: 25, y: 9, z: 138 }, scale: { x: 1.2, y: 1.2, z: 1.2 }, yawRadians: 0.8, color: "#FFE15A" },
     { id: "banner-citadel-01", kind: "sun_banner", position: { x: 11, y: 9, z: 157 }, scale: { x: 1.3, y: 1.3, z: 1.3 }, yawRadians: 0, color: "#FFCE45" },
     { id: "banner-citadel-02", kind: "sun_banner", position: { x: 26, y: 9, z: 157 }, scale: { x: 1.3, y: 1.3, z: 1.3 }, yawRadians: Math.PI, color: "#FF8F52" },
+    { id: "gear-clockwork-01", kind: "clockwork_gear", position: { x: 70, y: 3, z: 99 }, scale: { x: 1.4, y: 1.4, z: 1.4 }, yawRadians: 0.2, color: "#F5B94A" },
+    { id: "gear-clockwork-02", kind: "clockwork_gear", position: { x: 85, y: 3, z: 103 }, scale: { x: 1.1, y: 1.1, z: 1.1 }, yawRadians: -0.4, color: "#8ED7E6" },
+    { id: "crystal-frost-gate-01", kind: "frost_crystal", position: { x: 10, y: 9, z: 172 }, scale: { x: 1.35, y: 1.8, z: 1.35 }, yawRadians: 0.2, color: "#8FEAFF" },
+    { id: "crystal-frost-gate-02", kind: "frost_crystal", position: { x: 25, y: 9, z: 169 }, scale: { x: 1, y: 1.4, z: 1 }, yawRadians: 0.8, color: "#C1B7FF" },
+    { id: "crystal-cavern-01", kind: "frost_crystal", position: { x: 65, y: 9, z: 188 }, scale: { x: 1.4, y: 2, z: 1.4 }, yawRadians: -0.5, color: "#B5F5FF" },
+    { id: "crystal-summit-01", kind: "frost_crystal", position: { x: 29, y: 13, z: 214 }, scale: { x: 1.6, y: 2.2, z: 1.6 }, yawRadians: 0.3, color: "#9CA9FF" },
+    { id: "sign-frost", kind: "direction_sign", position: { x: 16, y: 9.8, z: 164 }, scale: { x: 1, y: 1, z: 1 }, yawRadians: 0, label: "霜晶谷 ↑" },
+    { id: "arch-cocoa-entry", kind: "cocoa_arch", position: { x: 25, y: 12.2, z: 229 }, scale: { x: 1.5, y: 1.5, z: 1.5 }, yawRadians: -0.7, color: "#8C4B2E" },
+    { id: "vent-cocoa-01", kind: "lava_vent", position: { x: -9, y: 11, z: 247 }, scale: { x: 1.1, y: 1.1, z: 1.1 }, yawRadians: 0, color: "#FF6B3D" },
+    { id: "vent-cocoa-02", kind: "lava_vent", position: { x: -24, y: 11, z: 240 }, scale: { x: 1.3, y: 1.3, z: 1.3 }, yawRadians: 0, color: "#FF9A45" },
+    { id: "gear-cocoa-01", kind: "clockwork_gear", position: { x: -19, y: 11, z: 249 }, scale: { x: 1.5, y: 1.5, z: 1.5 }, yawRadians: 0.4, color: "#D9823C" },
+    { id: "obelisk-moon-entry-01", kind: "moon_obelisk", position: { x: -28, y: 13, z: 271 }, scale: { x: 1.2, y: 1.5, z: 1.2 }, yawRadians: 0.2, color: "#A9B7FF" },
+    { id: "obelisk-moon-entry-02", kind: "moon_obelisk", position: { x: -17, y: 13, z: 278 }, scale: { x: 1, y: 1.25, z: 1 }, yawRadians: -0.5, color: "#E1D8FF" },
+    { id: "lantern-moon-01", kind: "floating_lantern", position: { x: -5, y: 18, z: 275 }, scale: { x: 1, y: 1, z: 1 }, yawRadians: 0, color: "#FFF0A8" },
+    { id: "lantern-moon-02", kind: "floating_lantern", position: { x: 9, y: 19, z: 291 }, scale: { x: 1.1, y: 1.1, z: 1.1 }, yawRadians: 0, color: "#B9F2FF" },
+    { id: "lantern-moon-03", kind: "floating_lantern", position: { x: 25, y: 20, z: 275 }, scale: { x: 1, y: 1, z: 1 }, yawRadians: 0, color: "#FFF0A8" },
+    { id: "obelisk-temple-01", kind: "moon_obelisk", position: { x: 26, y: 16, z: 293 }, scale: { x: 1.4, y: 1.8, z: 1.4 }, yawRadians: 0.1, color: "#C5C9FF" },
+    { id: "obelisk-temple-02", kind: "moon_obelisk", position: { x: 45, y: 16, z: 293 }, scale: { x: 1.4, y: 1.8, z: 1.4 }, yawRadians: -0.1, color: "#C5C9FF" },
+  ],
+  assetProps: [
+    { id: "asset-clockwork-pipe-01", kind: "pipe", position: { x: 71, y: 3, z: 109 }, scale: { x: 2, y: 2, z: 2 }, yawRadians: 0.5, animation: "none" },
+    { id: "asset-clockwork-barrel-01", kind: "barrel", position: { x: 84, y: 3, z: 97 }, scale: { x: 1.3, y: 1.3, z: 1.3 }, yawRadians: 0.25, animation: "none" },
+    { id: "asset-clockwork-saw-01", kind: "saw", position: { x: 78, y: 4.1, z: 103 }, scale: { x: 1.4, y: 1.4, z: 1.4 }, yawRadians: Math.PI / 2, animation: "spin" },
+    { id: "asset-frost-tree-01", kind: "tree-pine-snow", position: { x: 11, y: 9, z: 179 }, scale: { x: 1.6, y: 1.6, z: 1.6 }, yawRadians: 0.3, animation: "none" },
+    { id: "asset-frost-tree-02", kind: "tree-pine-snow", position: { x: 63, y: 9, z: 200 }, scale: { x: 1.4, y: 1.4, z: 1.4 }, yawRadians: -0.4, animation: "none" },
+    { id: "asset-frost-chest", kind: "chest", position: { x: 80, y: 12.3, z: 190 }, scale: { x: 1.2, y: 1.2, z: 1.2 }, yawRadians: -0.7, animation: "bob" },
+    { id: "asset-conveyor-01", kind: "conveyor-belt", position: { x: 15, y: 12.05, z: 233 }, scale: { x: 4.8, y: 1.2, z: 2.2 }, yawRadians: Math.PI / 2, animation: "none" },
+    { id: "asset-conveyor-02", kind: "conveyor-belt", position: { x: 0, y: 12.05, z: 238 }, scale: { x: 4.8, y: 1.2, z: 2.2 }, yawRadians: Math.PI / 2, animation: "none" },
+    { id: "asset-cocoa-pipe", kind: "pipe", position: { x: -23, y: 11, z: 237 }, scale: { x: 2.2, y: 2.2, z: 2.2 }, yawRadians: -0.4, animation: "none" },
+    { id: "asset-lava-rocks-01", kind: "rocks", position: { x: -29, y: 11.05, z: 252 }, scale: { x: 2.1, y: 1.2, z: 2.1 }, yawRadians: 0.4, animation: "none" },
+    { id: "asset-moon-mushrooms", kind: "mushrooms", position: { x: -27, y: 13, z: 279 }, scale: { x: 1.5, y: 1.5, z: 1.5 }, yawRadians: 0.8, animation: "none" },
+    { id: "asset-temple-flag", kind: "flag", position: { x: 48, y: 16, z: 278 }, scale: { x: 2, y: 2, z: 2 }, yawRadians: Math.PI, animation: "none" },
   ],
   criticalRoute: [
     { id: "route-start", position: { x: -55, y: 0, z: -42 }, hint: "从起点广场向东穿过跳石", expectedDirection: "east" },
@@ -1760,13 +2148,20 @@ export const WORLD_3D = {
     { id: "route-clockwork", position: { x: 58, y: 3, z: 88 }, hint: "沿齿轮跳石抵达第四检查点", expectedDirection: "east" },
     { id: "route-boost", position: { x: 78, y: 3, z: 109 }, hint: "踩中弹簧鼓台飞上风巢，移动升降台可作为稳妥路线", expectedDirection: "up" },
     { id: "route-wind", position: { x: 66, y: 9, z: 141 }, hint: "顶着横风连续跳过三组浮空机关", expectedDirection: "west" },
-    { id: "route-citadel", position: { x: 28, y: 9, z: 147 }, hint: "落上太阳堡垒并穿过终点门", expectedDirection: "west" },
+    { id: "route-citadel", position: { x: 28, y: 9, z: 147 }, hint: "穿过太阳堡，继续向北进入霜晶谷", expectedDirection: "north" },
+    { id: "route-frost-gate", position: { x: 18, y: 9, z: 168 }, hint: "在冰面上提前转向，避开交替伸缩的晶刺", expectedDirection: "north" },
+    { id: "route-frost-secret", position: { x: 66, y: 9, z: 188 }, hint: "弹上右侧移动冰台可发现高速风带捷径", expectedDirection: "east" },
+    { id: "route-crystal-climb", position: { x: 58, y: 9, z: 202 }, hint: "沿晶体阶梯或升降台攀上霜晶峰", expectedDirection: "up" },
+    { id: "route-cocoa-conveyor", position: { x: 24, y: 12, z: 229 }, hint: "逆着货运带前进，并观察蒸汽喷口节拍", expectedDirection: "west" },
+    { id: "route-molten-hop", position: { x: -25, y: 11, z: 248 }, hint: "连续踏过熔岩石阵，喷泉熄灭时起跳", expectedDirection: "north" },
+    { id: "route-moon-orbit", position: { x: -22, y: 13, z: 274 }, hint: "借月轨浮台穿过侧风，保持连续跳跃", expectedDirection: "east" },
+    { id: "route-moon-temple", position: { x: 26, y: 16, z: 283 }, hint: "登上月光神殿，穿过最终远征门", expectedDirection: "east" },
   ],
   goal: {
-    id: "goal-sun-gate",
-    name: "绒光太阳门",
+    id: "goal-moon-gate",
+    name: "奶油月光门",
     visual: "sun_gate",
-    position: { x: 12, y: 11.5, z: 149 },
+    position: { x: 44, y: 18.5, z: 284 },
     size: { x: 5, y: 5, z: 3 },
     requiredStarMedals: 0,
     celebrationSeconds: 4.5,

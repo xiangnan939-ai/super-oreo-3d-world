@@ -68,7 +68,7 @@ export function GameStage({
   useEffect(() => engineRef.current?.setSettings(settings), [settings]);
   useEffect(() => engineRef.current?.setRemotePlayers(remotePlayers), [remotePlayers]);
 
-  const touch = (key: "left" | "right" | "forward" | "backward" | "jump" | "run", pressed: boolean) => {
+  const touch = (key: "left" | "right" | "forward" | "backward" | "jump" | "run" | "dash", pressed: boolean) => {
     engineRef.current?.setTouchInput(key, pressed);
   };
 
@@ -85,7 +85,8 @@ export function GameStage({
             <button className="touch-button touch-button--right" type="button" aria-label="向右" onPointerDown={() => touch("right", true)} onPointerUp={() => touch("right", false)} onPointerCancel={() => touch("right", false)}>D</button>
           </div>
           <div className="touch-controls__cluster">
-            <button className="touch-button" type="button" aria-label="冲刺" onPointerDown={() => touch("run", true)} onPointerUp={() => touch("run", false)} onPointerCancel={() => touch("run", false)}>⇧</button>
+            <button className="touch-button" type="button" aria-label="加速奔跑" onPointerDown={() => touch("run", true)} onPointerUp={() => touch("run", false)} onPointerCancel={() => touch("run", false)}>⇧</button>
+            <button className="touch-button touch-button--dash" type="button" aria-label="空中冲刺" onPointerDown={() => touch("dash", true)} onPointerUp={() => touch("dash", false)} onPointerCancel={() => touch("dash", false)}>闪</button>
             <button className="touch-button touch-button--jump" type="button" aria-label="跳跃" onPointerDown={() => touch("jump", true)} onPointerUp={() => touch("jump", false)} onPointerCancel={() => touch("jump", false)}>跳跃</button>
           </div>
         </div>
