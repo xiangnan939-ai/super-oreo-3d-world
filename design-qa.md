@@ -7,6 +7,7 @@
 - Side-by-side comparison: `/Users/xn/Downloads/游戏网站/work/design-qa-comparison-final.png`
 - Comparison state: gameplay, third-person camera, desktop viewport at the reference height; the source was center-cropped by 36 px to match the browser capture width without scaling.
 - Expansion QA state (2026-07-14): clean local browser sessions at the opening garden, sugar-frost valley, cocoa furnace and moon temple using the development-only `qaSpawn` hook.
+- Chat/developer QA state (2026-07-18): two live local room tabs plus single-player command/menu verification at the opening garden.
 
 ## Visual match review
 
@@ -28,8 +29,12 @@
 - Air dash was rebound from `E` to `F`, reflected immediately in its accessible label, then restored to `E`; `保存并继续` resumed the simulation.
 - `主菜单` exited the live moon-temple run and restored the complete initial menu.
 - Fresh opening, frost, cocoa and moon browser runs reported no application console warnings or errors; all referenced GLB textures loaded successfully.
+- `T` opened the semi-transparent room chat; click and `Enter` submission both rendered the sender and timestamp, while closed recipients received an unread badge.
+- A two-tab room exchanged `房主广播测试` and `访客回复测试` in both directions, proving that messages reach every participant rather than remaining local UI state.
+- `/develop` enabled a local-only developer session, `` ` `` opened and hid its top-left menu, and changing lives from 5 to 12 updated the HUD immediately. Flight and invulnerability switches also reflected their active state.
+- Host and guest browser consoles remained free of warnings and errors throughout the chat relay test.
 - The cocoa and moon QA spawns settled on authored collision tops at `(-17.000, 11.700, 243.000)` and `(35.000, 16.700, 284.000)` respectively.
-- TypeScript, ESLint, Cloudflare Pages production build and all 46 deterministic/network/rendering regression tests passed.
+- TypeScript, ESLint, Cloudflare Pages production build and all 49 deterministic/network/rendering regression tests passed.
 
 ## Outstanding issues
 

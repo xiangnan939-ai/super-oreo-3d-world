@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GameStage, type GameHud, type RemotePlayerFrame } from "./GameStage";
 import {
+  createChatMessage,
   createOnlineRoom,
   isValidRoomCode,
   normalizeRoomCode,
@@ -12,7 +13,12 @@ import {
   type RoomPlayer,
   type RoomStatus,
   type RoomTransport,
+  type ChatMessage,
 } from "../game/network";
+import {
+  DEFAULT_DEVELOPER_OPTIONS,
+  type DeveloperOptions,
+} from "../game/developer";
 import {
   DEFAULT_GAME_SETTINGS,
   GAME_ACTIONS,
@@ -26,6 +32,7 @@ import { WORLD_3D } from "../game/world3d";
 
 type Screen = "menu" | "join" | "lobby" | "playing" | "results";
 type PauseView = "closed" | "menu" | "settings";
+type ChatEntry = ChatMessage & { system?: boolean };
 
 const SETTINGS_STORAGE_KEY = "super-oreo-settings-v2";
 const SOUND_STORAGE_KEY = "super-oreo-sound-v1";
@@ -83,6 +90,14 @@ function formatCounter(value: number, digits: number) {
   return Math.max(0, Math.floor(value)).toString().padStart(digits, "0");
 }
 
+function formatChatTime(sentAt: number) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(sentAt));
+}
+
 function CookieAvatar({ small = false }: { small?: boolean }) {
   return (
     <img className={`cookie-avatar${small ? " cookie-avatar--small" : ""}`} src="/hud/avatar.png" alt="" aria-hidden="true" />
@@ -109,12 +124,21 @@ export function OreoGameApp() {
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [bindingAction, setBindingAction] = useState<GameAction | null>(null);
   const [settingsNotice, setSettingsNotice] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatEntry[]>([]);
+  const [unreadChat, setUnreadChat] = useState(0);
+  const [developerOptions, setDeveloperOptions] = useState<DeveloperOptions>(DEFAULT_DEVELOPER_OPTIONS);
+  const [developerMenuOpen, setDeveloperMenuOpen] = useState(false);
   const [playerId] = useState(randomPlayerId);
   const room = useRef<RoomConnection | null>(null);
   const nicknameRef = useRef(nickname);
   const pauseDialogRef = useRef<HTMLElement | null>(null);
   const resumeButtonRef = useRef<HTMLButtonElement | null>(null);
   const pauseReturnFocusRef = useRef<HTMLElement | null>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const chatOpenRef = useRef(false);
   const finishTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -169,12 +193,14 @@ export function OreoGameApp() {
     pauseReturnFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
+    setChatOpen(false);
+    setDeveloperMenuOpen(false);
     setPauseView("menu");
   }, []);
 
   const assignBinding = useCallback((action: GameAction, code: string) => {
-    if (code === "Tab" || code === "Escape") {
-      setSettingsNotice("Tab 与 Esc 是系统保留键，请选择其他按键。");
+    if (code === "Tab" || code === "Escape" || code === "KeyT" || code === "Backquote") {
+      setSettingsNotice("Tab、Esc、T 与 ` 是界面保留键，请选择其他按键。");
       return;
     }
     setSettings((current) => {
@@ -205,15 +231,59 @@ export function OreoGameApp() {
   }, [assignBinding, bindingAction]);
 
   useEffect(() => {
+    chatOpenRef.current = chatOpen;
+    const frame = window.requestAnimationFrame(() => {
+      if (chatOpen) chatInputRef.current?.focus();
+      chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [chatMessages, chatOpen]);
+
+  useEffect(() => {
+    const toggleGamePanels = (event: KeyboardEvent) => {
+      if (screen !== "playing" || pauseView !== "closed" || bindingAction || event.repeat) return;
+      const target = event.target;
+      const editable = (target instanceof HTMLInputElement &&
+        ["text", "search", "email", "url", "tel", "password"].includes(target.type)) ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if (event.code === "Escape" && (chatOpen || developerMenuOpen)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setChatOpen(false);
+        setDeveloperMenuOpen(false);
+        return;
+      }
+      if (editable) return;
+      if (event.code === "KeyT") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setDeveloperMenuOpen(false);
+        if (!chatOpen) setUnreadChat(0);
+        setChatOpen(!chatOpen);
+        return;
+      }
+      if (event.code === "Backquote" && developerOptions.enabled) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setChatOpen(false);
+        setDeveloperMenuOpen((current) => !current);
+      }
+    };
+    window.addEventListener("keydown", toggleGamePanels, true);
+    return () => window.removeEventListener("keydown", toggleGamePanels, true);
+  }, [bindingAction, chatOpen, developerMenuOpen, developerOptions.enabled, pauseView, screen]);
+
+  useEffect(() => {
     const togglePause = (event: KeyboardEvent) => {
-      if (screen !== "playing" || pauseView !== "closed" || event.code !== "Tab" || bindingAction) return;
+      if (screen !== "playing" || pauseView !== "closed" || chatOpen || developerMenuOpen || event.code !== "Tab" || bindingAction) return;
       if (event.repeat) return;
       event.preventDefault();
       openPauseMenu();
     };
     window.addEventListener("keydown", togglePause, true);
     return () => window.removeEventListener("keydown", togglePause, true);
-  }, [bindingAction, openPauseMenu, pauseView, screen]);
+  }, [bindingAction, chatOpen, developerMenuOpen, openPauseMenu, pauseView, screen]);
 
   useEffect(() => {
     if (pauseView === "closed") {
@@ -257,6 +327,22 @@ export function OreoGameApp() {
     return () => window.removeEventListener("keydown", containFocus, true);
   }, [bindingAction, pauseView]);
 
+  const appendChatMessage = useCallback((message: ChatEntry) => {
+    setChatMessages((current) => [...current, message].slice(-100));
+    if (!chatOpenRef.current) setUnreadChat((current) => Math.min(99, current + 1));
+  }, []);
+
+  const appendSystemMessage = useCallback((text: string) => {
+    appendChatMessage({
+      id: `system_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      playerId: "system",
+      name: "系统",
+      text,
+      sentAt: Date.now(),
+      system: true,
+    });
+  }, [appendChatMessage]);
+
   const disconnect = useCallback(() => {
     room.current?.disconnect();
     room.current = null;
@@ -266,6 +352,12 @@ export function OreoGameApp() {
     setRoomStatus("offline");
     setRoomTransport("none");
     setIsReady(false);
+    setChatOpen(false);
+    setChatDraft("");
+    setChatMessages([]);
+    setUnreadChat(0);
+    setDeveloperMenuOpen(false);
+    setDeveloperOptions(DEFAULT_DEVELOPER_OPTIONS);
   }, []);
 
   useEffect(() => () => {
@@ -302,6 +394,8 @@ export function OreoGameApp() {
           onStart: () => {
             setHud(INITIAL_HUD);
             setPauseView("closed");
+            setChatOpen(false);
+            setDeveloperMenuOpen(false);
             setScreen("playing");
           },
           onPlayerState: (frame) => {
@@ -315,13 +409,14 @@ export function OreoGameApp() {
               return next;
             });
           },
+          onChatMessage: appendChatMessage,
           onError: (message) => setNotice(message),
         },
       );
       room.current = connection;
       await connection.connect();
     },
-    [disconnect, nickname, playerId, skin],
+    [appendChatMessage, disconnect, nickname, playerId, skin],
   );
 
   const createRoom = useCallback(async () => {
@@ -375,9 +470,43 @@ export function OreoGameApp() {
     });
   }, [playerId, skin]);
 
+  const submitChat = useCallback(() => {
+    const text = chatDraft.trim();
+    if (!text) return;
+    setChatDraft("");
+    if (text.toLowerCase() === "/develop") {
+      const enabled = !developerOptions.enabled;
+      setDeveloperOptions((current) => ({
+        ...current,
+        enabled,
+        lives: enabled ? hud.lives : current.lives,
+        flying: enabled ? current.flying : false,
+        invulnerable: enabled ? current.invulnerable : false,
+      }));
+      if (!enabled) setDeveloperMenuOpen(false);
+      appendSystemMessage(enabled
+        ? "开发者模式已开启。按 ` 显示或隐藏开发者菜单。"
+        : "开发者模式已关闭，本机参数已恢复正常规则。");
+      return;
+    }
+
+    if (room.current) {
+      room.current.sendChatMessage(text);
+      return;
+    }
+    const localMessage = createChatMessage({
+      playerId,
+      name: nicknameRef.current || "探险家",
+      skin,
+    }, text);
+    if (localMessage) appendChatMessage(localMessage);
+  }, [appendChatMessage, appendSystemMessage, chatDraft, developerOptions.enabled, hud.lives, playerId, skin]);
+
   const handleFinish = useCallback((finalHud: GameHud) => {
     setHud(finalHud);
     setPauseView("closed");
+    setChatOpen(false);
+    setDeveloperMenuOpen(false);
     room.current?.sendFinish({ elapsedMs: finalHud.elapsedMs, coins: finalHud.coins, deaths: finalHud.deaths });
     if (finishTimerRef.current !== null) window.clearTimeout(finishTimerRef.current);
     finishTimerRef.current = window.setTimeout(() => {
@@ -410,7 +539,9 @@ export function OreoGameApp() {
         skin={skin}
         soundOn={soundOn}
         paused={pauseView !== "closed"}
+        controlsBlocked={chatOpen || developerMenuOpen}
         settings={settings}
+        developerOptions={developerOptions}
         remotePlayers={remoteFrames}
         onHud={handleHud}
         onLocalFrame={handleLocalFrame}
@@ -453,8 +584,122 @@ export function OreoGameApp() {
             <div className={`hud-dash${hud.dashReady ? " is-ready" : ""}`}><kbd>{keyCodeLabel(settings.keyBindings.dash)}</kbd> 空中冲刺 {hud.dashReady ? "就绪" : "落地充能"}</div>
           </div>
           <div className="hud-route"><small>{hud.biomeSubtitle}</small><span>{hud.biome}</span><strong>{hud.objective}</strong><em>检查点 {hud.checkpoint}/{hud.totalCheckpoints}</em></div>
-          <div className="mouse-hint"><span>点击画面锁定鼠标 · Tab 菜单</span><small>{keyCodeLabel(settings.keyBindings.forward)} {keyCodeLabel(settings.keyBindings.backward)} {keyCodeLabel(settings.keyBindings.left)} {keyCodeLabel(settings.keyBindings.right)} 移动 · {keyCodeLabel(settings.keyBindings.jump)} 跳跃 · {keyCodeLabel(settings.keyBindings.sprint)} 加速 · {keyCodeLabel(settings.keyBindings.dash)} 空中冲刺 · 鼠标转动视角</small></div>
+          <div className="mouse-hint"><span>点击画面锁定鼠标 · T 聊天 · Tab 菜单</span><small>{keyCodeLabel(settings.keyBindings.forward)} {keyCodeLabel(settings.keyBindings.backward)} {keyCodeLabel(settings.keyBindings.left)} {keyCodeLabel(settings.keyBindings.right)} 移动 · {keyCodeLabel(settings.keyBindings.jump)} 跳跃 · {keyCodeLabel(settings.keyBindings.sprint)} 加速 · {keyCodeLabel(settings.keyBindings.dash)} 空中冲刺 · 鼠标转动视角</small></div>
         </section>
+      )}
+
+      {screen === "playing" && (
+        <>
+          {!chatOpen && (
+            <button className="chat-launcher" type="button" onClick={() => { setDeveloperMenuOpen(false); setUnreadChat(0); setChatOpen(true); }} aria-label="打开房间聊天">
+              <kbd>T</kbd><span>聊天</span>{unreadChat > 0 && <strong>{unreadChat}</strong>}
+            </button>
+          )}
+          {chatOpen && (
+            <section className="game-chat" aria-label="房间聊天窗口">
+              <header className="game-chat__header">
+                <div><span className="chat-live-dot" /><b>{roomCode ? `房间 ${roomCode}` : "本次冒险"}</b><small>全房间聊天</small></div>
+                <button type="button" onClick={() => setChatOpen(false)} aria-label="关闭聊天">关闭</button>
+              </header>
+              <div ref={chatLogRef} className="game-chat__log" role="log" aria-live="polite" aria-relevant="additions text">
+                {chatMessages.length === 0 && (
+                  <p className="game-chat__empty">还没有消息。向队友打个招呼吧！</p>
+                )}
+                {chatMessages.map((message) => (
+                  <article className={`chat-message${message.system ? " chat-message--system" : ""}`} key={`${message.playerId}:${message.id}`}>
+                    <div><b>{message.name}</b><time dateTime={new Date(message.sentAt).toISOString()}>{formatChatTime(message.sentAt)}</time></div>
+                    <p>{message.text}</p>
+                  </article>
+                ))}
+              </div>
+              <form className="game-chat__composer" onSubmit={(event) => { event.preventDefault(); submitChat(); }}>
+                <input
+                  ref={chatInputRef}
+                  value={chatDraft}
+                  maxLength={280}
+                  onChange={(event) => setChatDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    submitChat();
+                  }}
+                  placeholder="输入消息，Enter 发送"
+                  aria-label="聊天消息"
+                  autoComplete="off"
+                />
+                <button type="submit" disabled={!chatDraft.trim()}>发送</button>
+              </form>
+              <p className="game-chat__hint">T 打开/关闭 · Esc 关闭 · 输入 /develop 切换本机开发者模式</p>
+            </section>
+          )}
+
+          {developerOptions.enabled && !developerMenuOpen && (
+            <button className="developer-badge" type="button" onClick={() => { setChatOpen(false); setDeveloperMenuOpen(true); }}>
+              <b>DEV</b><span>` 开发者菜单</span>
+            </button>
+          )}
+          {developerOptions.enabled && developerMenuOpen && (
+            <aside className="developer-panel" aria-label="开发者菜单">
+              <header>
+                <div><small>LOCAL PLAYER</small><h2>开发者菜单</h2></div>
+                <button type="button" onClick={() => setDeveloperMenuOpen(false)} aria-label="隐藏开发者菜单">×</button>
+              </header>
+              <p className="developer-panel__scope">所有修改仅作用于本人，不会改变其他玩家。</p>
+
+              <label className="developer-number" htmlFor="developer-lives">
+                <span><b>生命数</b><small>当前 HUD：{hud.lives}</small></span>
+                <input
+                  id="developer-lives"
+                  type="number"
+                  min="1"
+                  max="99"
+                  value={developerOptions.lives}
+                  onChange={(event) => setDeveloperOptions((current) => ({
+                    ...current,
+                    lives: Math.min(99, Math.max(1, Number(event.target.value) || 1)),
+                  }))}
+                />
+              </label>
+
+              <button className="developer-toggle" type="button" role="switch" aria-checked={developerOptions.flying} onClick={() => setDeveloperOptions((current) => ({ ...current, flying: !current.flying }))}>
+                <span><b>飞行模式</b><small>空格上升，Ctrl 下降</small></span><i />
+              </button>
+              <button className="developer-toggle" type="button" role="switch" aria-checked={developerOptions.invulnerable} onClick={() => setDeveloperOptions((current) => ({ ...current, invulnerable: !current.invulnerable }))}>
+                <span><b>无敌模式</b><small>忽略敌人与机关伤害</small></span><i />
+              </button>
+
+              <label className="developer-range" htmlFor="developer-speed">
+                <span><b>行走速度</b><strong>×{developerOptions.moveSpeedMultiplier.toFixed(1)}</strong></span>
+                <input
+                  id="developer-speed"
+                  type="range"
+                  min="0.5"
+                  max="4"
+                  step="0.1"
+                  value={developerOptions.moveSpeedMultiplier}
+                  onChange={(event) => setDeveloperOptions((current) => ({ ...current, moveSpeedMultiplier: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="developer-range" htmlFor="developer-jump">
+                <span><b>跳跃高度</b><strong>×{developerOptions.jumpHeightMultiplier.toFixed(1)}</strong></span>
+                <input
+                  id="developer-jump"
+                  type="range"
+                  min="0.5"
+                  max="3"
+                  step="0.1"
+                  value={developerOptions.jumpHeightMultiplier}
+                  onChange={(event) => setDeveloperOptions((current) => ({ ...current, jumpHeightMultiplier: Number(event.target.value) }))}
+                />
+              </label>
+
+              <footer>
+                <button type="button" onClick={() => setDeveloperOptions({ ...DEFAULT_DEVELOPER_OPTIONS, enabled: true, lives: hud.lives })}>恢复本机默认值</button>
+                <span>按 ` 隐藏</span>
+              </footer>
+            </aside>
+          )}
+        </>
       )}
 
       {screen === "playing" && pauseView !== "closed" && (

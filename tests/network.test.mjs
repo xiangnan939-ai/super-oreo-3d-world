@@ -5,6 +5,7 @@ import {
   isValidRoomCode,
   normalizeRoomCode,
   roomJoinBlockReason,
+  sanitizeChatMessage,
   sanitizePlayerFrame,
 } from "../game/network.ts";
 import {
@@ -14,6 +15,7 @@ import {
   directedStateRecipients,
   guestReconnectLeaseMatches,
   messageRateLimitForRole,
+  sanitizeServerChat,
   sanitizeServerFrame,
 } from "../worker/room-worker.ts";
 import {
@@ -91,6 +93,29 @@ test("server validation also binds a frame to its authenticated room player", ()
   assert.equal(safe.playerId, guestC.playerId);
   assert.equal(safe.host, false);
   assert.equal(sanitizeServerFrame(frame({ facing: Number.POSITIVE_INFINITY }), guestC), null);
+});
+
+test("chat validation binds identity, strips controls and caps message length", () => {
+  const chat = sanitizeChatMessage({
+    id: "message_123",
+    playerId: "spoofed-player",
+    name: "Spoofed name",
+    text: `  你好\u0000，房间！${"x".repeat(400)}  `,
+    sentAt: 12_345,
+  }, guestB);
+  assert.ok(chat);
+  assert.equal(chat.playerId, guestB.playerId);
+  assert.equal(chat.name, guestB.name);
+  assert.equal(chat.text.includes("\u0000"), false);
+  assert.equal(chat.text.length, 280);
+  assert.equal(sanitizeChatMessage({ id: "bad id", text: "hello" }, guestB), null);
+  assert.equal(sanitizeChatMessage({ id: "message_456", text: "   " }, guestB), null);
+
+  const serverChat = sanitizeServerChat({ id: "message_789", text: "hello", name: "fake" }, guestC, 99_000);
+  assert.ok(serverChat);
+  assert.equal(serverChat.playerId, guestC.playerId);
+  assert.equal(serverChat.name, guestC.name);
+  assert.equal(serverChat.sentAt, 99_000);
 });
 
 test("WebSocket fallback preserves the host-star relay invariant", () => {

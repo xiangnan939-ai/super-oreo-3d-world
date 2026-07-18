@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { OreoGameEngine, type EngineFrame, type EngineHud } from "../game/engine";
+import type { DeveloperOptions } from "../game/developer";
 import type { GameSettings } from "../game/settings";
 
 export type GameHud = EngineHud;
@@ -13,7 +14,9 @@ interface GameStageProps {
   skin: string;
   soundOn: boolean;
   paused: boolean;
+  controlsBlocked: boolean;
   settings: GameSettings;
+  developerOptions: DeveloperOptions;
   remotePlayers: Record<string, RemotePlayerFrame>;
   onHud(hud: GameHud): void;
   onLocalFrame(frame: Omit<RemotePlayerFrame, "playerId" | "name" | "skin">): void;
@@ -26,7 +29,9 @@ export function GameStage({
   skin,
   soundOn,
   paused,
+  controlsBlocked,
   settings,
+  developerOptions,
   remotePlayers,
   onHud,
   onLocalFrame,
@@ -65,7 +70,9 @@ export function GameStage({
   useEffect(() => engineRef.current?.setSkin(skin), [skin]);
   useEffect(() => engineRef.current?.setSoundOn(soundOn), [soundOn]);
   useEffect(() => engineRef.current?.setPaused(paused), [paused]);
+  useEffect(() => engineRef.current?.setControlsBlocked(controlsBlocked), [controlsBlocked]);
   useEffect(() => engineRef.current?.setSettings(settings), [settings]);
+  useEffect(() => engineRef.current?.setDeveloperOptions(developerOptions), [developerOptions]);
   useEffect(() => engineRef.current?.setRemotePlayers(remotePlayers), [remotePlayers]);
 
   const touch = (key: "left" | "right" | "forward" | "backward" | "jump" | "run" | "dash", pressed: boolean) => {
@@ -76,7 +83,7 @@ export function GameStage({
     <div className="game-stage" aria-label="超级奥利奥 3D 游戏画面">
       <canvas ref={canvasRef} />
       {!ready && <div className="game-stage__loading">正在铺设青空遗迹…</div>}
-      {active && !paused && (
+      {active && !paused && !controlsBlocked && (
         <div className="touch-controls" aria-label="触摸游戏控制">
           <div className="touch-controls__cluster touch-controls__dpad">
             <button className="touch-button touch-button--up" type="button" aria-label="向前" onPointerDown={() => touch("forward", true)} onPointerUp={() => touch("forward", false)} onPointerCancel={() => touch("forward", false)}>W</button>

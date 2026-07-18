@@ -11,6 +11,11 @@ import {
   type WindZone,
 } from "./world3d";
 import { DEFAULT_GAME_SETTINGS, type GameSettings } from "./settings";
+import {
+  DEFAULT_DEVELOPER_OPTIONS,
+  normalizeDeveloperOptions,
+  type DeveloperOptions,
+} from "./developer";
 import { toSimulationLevel } from "./level3d";
 import {
   createWorld3D,
@@ -257,6 +262,7 @@ export class OreoGameEngine {
   private skin: string;
   private active = false;
   private paused = false;
+  private controlsBlocked = false;
   private attract = true;
   private destroyed = false;
   private animationFrame = 0;
@@ -278,6 +284,7 @@ export class OreoGameEngine {
   private lastFootstepAt = 0;
   private readonly tubeCurves = new Map<string, THREE.CatmullRomCurve3>();
   private settings: GameSettings;
+  private developerOptions: DeveloperOptions = DEFAULT_DEVELOPER_OPTIONS;
 
   private readonly onResize = () => this.resize();
   private readonly onKeyDown = (event: KeyboardEvent) => this.handleKey(event, true);
@@ -286,11 +293,11 @@ export class OreoGameEngine {
     this.canvas.classList.toggle("is-pointer-locked", document.pointerLockElement === this.canvas);
   };
   private readonly onMouseMove = (event: MouseEvent) => {
-    if (!this.active || this.paused || document.pointerLockElement !== this.canvas) return;
+    if (!this.active || this.paused || this.controlsBlocked || document.pointerLockElement !== this.canvas) return;
     this.orbitBy(event.movementX, event.movementY);
   };
   private readonly onPointerDown = (event: PointerEvent) => {
-    if (!this.active || this.paused) return;
+    if (!this.active || this.paused || this.controlsBlocked) return;
     this.audio.unlock();
     this.dragging = true;
     this.lastPointerX = event.clientX;
@@ -300,7 +307,7 @@ export class OreoGameEngine {
     }
   };
   private readonly onPointerMove = (event: PointerEvent) => {
-    if (!this.active || this.paused || !this.dragging) return;
+    if (!this.active || this.paused || this.controlsBlocked || !this.dragging) return;
     if (event.pointerType === "mouse" && document.pointerLockElement === this.canvas) return;
     this.orbitBy(event.clientX - this.lastPointerX, event.clientY - this.lastPointerY);
     this.lastPointerX = event.clientX;
@@ -308,7 +315,7 @@ export class OreoGameEngine {
   };
   private readonly onPointerUp = () => { this.dragging = false; };
   private readonly onWheel = (event: WheelEvent) => {
-    if (!this.active || this.paused) return;
+    if (!this.active || this.paused || this.controlsBlocked) return;
     this.cameraDistance = THREE.MathUtils.clamp(this.cameraDistance + event.deltaY * 0.008, 7.5, 18);
   };
   private readonly releaseInputs = () => {
@@ -364,6 +371,9 @@ export class OreoGameEngine {
     if (active) {
       this.world = createWorld3D(this.simulationLevel, LOCAL_PLAYER_ID);
       this.applyDevelopmentSpawn();
+      if (this.developerOptions.enabled) {
+        this.world.players[LOCAL_PLAYER_ID].lives = this.developerOptions.lives;
+      }
       this.finishedNotified = false;
       this.tubeRide = null;
       this.tubeCooldown = 0;
@@ -409,6 +419,38 @@ export class OreoGameEngine {
     this.releaseInputs();
     if (paused && document.pointerLockElement === this.canvas) document.exitPointerLock();
     this.lastTime = performance.now();
+  }
+
+  setControlsBlocked(blocked: boolean) {
+    if (this.controlsBlocked === blocked) return;
+    this.controlsBlocked = blocked;
+    this.releaseInputs();
+    if (blocked && document.pointerLockElement === this.canvas) document.exitPointerLock();
+  }
+
+  setDeveloperOptions(options: DeveloperOptions) {
+    const previous = this.developerOptions;
+    const next = normalizeDeveloperOptions(options);
+    this.developerOptions = next;
+    if (next.enabled && (!previous.enabled || next.lives !== previous.lives)) {
+      const player = this.world.players[LOCAL_PLAYER_ID];
+      player.lives = next.lives;
+      if (player.status === "game-over") {
+        player.status = "active";
+        player.x = player.respawnX;
+        player.y = player.respawnY;
+        player.z = player.respawnZ;
+        player.vx = 0;
+        player.vy = 0;
+        player.vz = 0;
+        this.world.status = "playing";
+      }
+      this.options.onHud(this.makeHud());
+    }
+    if (!next.enabled || !next.flying) {
+      this.keys.delete("ControlLeft");
+      this.keys.delete("ControlRight");
+    }
   }
 
   setSettings(settings: GameSettings) {
@@ -562,6 +604,19 @@ export class OreoGameEngine {
 
   private currentInput(): InputState3D {
     const bindings = this.settings.keyBindings;
+    if (this.controlsBlocked) {
+      return {
+        cameraYaw: this.cameraYaw,
+        moveSpeedMultiplier: this.developerOptions.enabled ? this.developerOptions.moveSpeedMultiplier : 1,
+        jumpHeightMultiplier: this.developerOptions.enabled ? this.developerOptions.jumpHeightMultiplier : 1,
+        flying: this.developerOptions.enabled && this.developerOptions.flying,
+        invulnerable: this.developerOptions.enabled && this.developerOptions.invulnerable,
+      };
+    }
+    const developerEnabled = this.developerOptions.enabled;
+    const flying = developerEnabled && this.developerOptions.flying;
+    const flyUp = this.keys.has(bindings.jump) || this.touch.jump;
+    const flyDown = this.keys.has("ControlLeft") || this.keys.has("ControlRight");
     return {
       forward: this.keys.has(bindings.forward) || this.touch.forward,
       backward: this.keys.has(bindings.backward) || this.touch.backward,
@@ -571,14 +626,21 @@ export class OreoGameEngine {
       sprint: this.keys.has(bindings.sprint) || this.touch.run,
       dash: this.keys.has(bindings.dash) || this.touch.dash,
       cameraYaw: this.cameraYaw,
+      moveSpeedMultiplier: developerEnabled ? this.developerOptions.moveSpeedMultiplier : 1,
+      jumpHeightMultiplier: developerEnabled ? this.developerOptions.jumpHeightMultiplier : 1,
+      flying,
+      flyVertical: flying ? Number(flyUp) - Number(flyDown) : 0,
+      invulnerable: developerEnabled && this.developerOptions.invulnerable,
     };
   }
 
   private handleKey(event: KeyboardEvent, pressed: boolean) {
     const gameKeys = Object.values(this.settings.keyBindings);
-    if (!gameKeys.includes(event.code)) return;
+    const developerFlightKey = this.developerOptions.enabled && this.developerOptions.flying &&
+      (event.code === "ControlLeft" || event.code === "ControlRight");
+    if (!gameKeys.includes(event.code) && !developerFlightKey) return;
     if (this.active && !this.paused) event.preventDefault();
-    if (this.paused) return;
+    if (this.paused || this.controlsBlocked) return;
     if (pressed) {
       const first = !this.keys.has(event.code);
       this.keys.add(event.code);
@@ -587,6 +649,9 @@ export class OreoGameEngine {
         if (event.code === this.settings.keyBindings.jump) this.audio.jump();
         if (event.code === this.settings.keyBindings.restart) {
           this.world = createWorld3D(this.simulationLevel, LOCAL_PLAYER_ID);
+          if (this.developerOptions.enabled) {
+            this.world.players[LOCAL_PLAYER_ID].lives = this.developerOptions.lives;
+          }
           this.finishedNotified = false;
           this.tubeRide = null;
           this.tubeCooldown = 0;

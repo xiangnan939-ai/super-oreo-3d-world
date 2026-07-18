@@ -65,6 +65,12 @@ export interface InputState3D {
   /** Optional world-space movement. When either value is supplied, it wins. */
   moveX?: number;
   moveZ?: number;
+  /** Local-only developer tuning. Callers must never derive these from peers. */
+  moveSpeedMultiplier?: number;
+  jumpHeightMultiplier?: number;
+  flying?: boolean;
+  flyVertical?: number;
+  invulnerable?: boolean;
 }
 
 export interface NormalizedInputState3D {
@@ -78,6 +84,11 @@ export interface NormalizedInputState3D {
   cameraYaw: number;
   moveX: number | null;
   moveZ: number | null;
+  moveSpeedMultiplier: number;
+  jumpHeightMultiplier: number;
+  flying: boolean;
+  flyVertical: number;
+  invulnerable: boolean;
 }
 
 export type InputMap3D = Readonly<
@@ -378,6 +389,11 @@ const NEUTRAL_INPUT_3D: NormalizedInputState3D = {
   cameraYaw: 0,
   moveX: null,
   moveZ: null,
+  moveSpeedMultiplier: 1,
+  jumpHeightMultiplier: 1,
+  flying: false,
+  flyVertical: 0,
+  invulnerable: false,
 };
 
 function finiteOr(value: number | undefined, fallback: number): number {
@@ -471,6 +487,11 @@ function normalizeInput3D(
     cameraYaw: finiteOr(input?.cameraYaw, 0),
     moveX: useWorldMovement ? finiteOr(input?.moveX, 0) : null,
     moveZ: useWorldMovement ? finiteOr(input?.moveZ, 0) : null,
+    moveSpeedMultiplier: Math.min(4, Math.max(0.5, finiteOr(input?.moveSpeedMultiplier, 1))),
+    jumpHeightMultiplier: Math.min(3, Math.max(0.5, finiteOr(input?.jumpHeightMultiplier, 1))),
+    flying: input?.flying === true,
+    flyVertical: Math.min(1, Math.max(-1, finiteOr(input?.flyVertical, 0))),
+    invulnerable: input?.invulnerable === true,
   };
 }
 
@@ -1216,7 +1237,7 @@ function consumeBufferedJump3D(player: PlayerState3D): boolean {
   if (player.jumpBufferRemaining <= 0 || player.coyoteRemaining <= 0) {
     return false;
   }
-  player.vy = PHYSICS_3D.jumpSpeed;
+  player.vy = PHYSICS_3D.jumpSpeed * player.input.jumpHeightMultiplier;
   player.grounded = false;
   player.groundObjectId = null;
   player.coyoteRemaining = 0;
@@ -1328,6 +1349,7 @@ function updatePlayer3D(
   const hasMovement = Math.hypot(direction.x, direction.z) > 1e-8;
   if (hasMovement) player.facingYaw = Math.atan2(direction.x, direction.z);
   if (
+    !player.input.flying &&
     !wasGrounded &&
     player.airDashAvailable &&
     player.dashBufferRemaining > 0 &&
@@ -1347,11 +1369,17 @@ function updatePlayer3D(
     player.jumpCutAvailable = false;
     world.events.push({ type: "dash", playerId: player.id });
   }
-  const isDashing = player.dashRemaining > 0;
-  const maxSpeed = player.input.sprint
+  if (player.input.flying) {
+    player.dashRemaining = 0;
+    player.airDashAvailable = true;
+    player.jumpBufferRemaining = 0;
+    player.jumpCutAvailable = false;
+  }
+  const isDashing = !player.input.flying && player.dashRemaining > 0;
+  const maxSpeed = (player.input.sprint
     ? PHYSICS_3D.sprintSpeed
-    : PHYSICS_3D.walkSpeed;
-  const acceleration = wasGrounded
+    : PHYSICS_3D.walkSpeed) * player.input.moveSpeedMultiplier;
+  const acceleration = (wasGrounded
     ? hasMovement
       ? surface === "ice"
         ? PHYSICS_3D.iceAcceleration
@@ -1359,7 +1387,7 @@ function updatePlayer3D(
       : surface === "ice"
         ? PHYSICS_3D.iceDeceleration
         : PHYSICS_3D.groundDeceleration
-    : PHYSICS_3D.airAcceleration;
+    : PHYSICS_3D.airAcceleration) * Math.max(1, player.input.moveSpeedMultiplier);
   if (isDashing) {
     player.vx = player.dashDirectionX * PHYSICS_3D.airDashSpeed;
     player.vz = player.dashDirectionZ * PHYSICS_3D.airDashSpeed;
@@ -1376,19 +1404,27 @@ function updatePlayer3D(
     );
   }
 
-  const jumped = consumeBufferedJump3D(player);
-  if (
-    player.jumpCutAvailable &&
-    !player.input.jump &&
-    player.vy > PHYSICS_3D.jumpReleaseSpeed
-  ) {
-    player.vy = PHYSICS_3D.jumpReleaseSpeed;
-    player.jumpCutAvailable = false;
+  const jumped = player.input.flying ? false : consumeBufferedJump3D(player);
+  if (player.input.flying) {
+    player.vy = moveToward(
+      player.vy,
+      player.input.flyVertical * maxSpeed,
+      PHYSICS_3D.groundAcceleration * Math.max(1, player.input.moveSpeedMultiplier) * dt,
+    );
+  } else {
+    if (
+      player.jumpCutAvailable &&
+      !player.input.jump &&
+      player.vy > PHYSICS_3D.jumpReleaseSpeed * player.input.jumpHeightMultiplier
+    ) {
+      player.vy = PHYSICS_3D.jumpReleaseSpeed * player.input.jumpHeightMultiplier;
+      player.jumpCutAvailable = false;
+    }
+    player.vy = Math.max(
+      player.vy + PHYSICS_3D.gravity * dt * (isDashing ? 0.08 : 1),
+      -PHYSICS_3D.maxFallSpeed,
+    );
   }
-  player.vy = Math.max(
-    player.vy + PHYSICS_3D.gravity * dt * (isDashing ? 0.08 : 1),
-    -PHYSICS_3D.maxFallSpeed,
-  );
   player.grounded = false;
   player.groundObjectId = null;
 
@@ -1439,12 +1475,15 @@ function updatePlayer3D(
     consumeBufferedJump3D(player);
   }
 
-  if (player.y - player.height / 2 < world.bounds.killY) {
+  if (player.input.flying && player.y - player.height / 2 < world.bounds.killY) {
+    player.y = world.bounds.killY + player.height / 2;
+    player.vy = Math.max(0, player.vy);
+  } else if (player.y - player.height / 2 < world.bounds.killY) {
     killPlayer3D(world, player, "fall");
     return;
   }
 
-  if (player.invulnerabilityRemaining === 0) {
+  if (!player.input.invulnerable && player.invulnerabilityRemaining === 0) {
     for (const hazard of world.hazards) {
       if (hazard.active && overlaps3D(player, hazard)) {
         killPlayer3D(world, player, "hazard", hazard.id);
@@ -1504,7 +1543,7 @@ function updatePlayer3D(
         enemyId: enemy.id,
         value: enemy.points,
       });
-    } else if (player.invulnerabilityRemaining === 0) {
+    } else if (!player.input.invulnerable && player.invulnerabilityRemaining === 0) {
       killPlayer3D(world, player, "enemy", enemy.id);
       return;
     }
@@ -1557,6 +1596,11 @@ const INPUT_KEYS_3D: ReadonlyArray<keyof InputState3D> = [
   "cameraYaw",
   "moveX",
   "moveZ",
+  "moveSpeedMultiplier",
+  "jumpHeightMultiplier",
+  "flying",
+  "flyVertical",
+  "invulnerable",
 ];
 
 function isSingleInput3D(input: WorldInput3D): input is InputState3D {
@@ -1587,7 +1631,7 @@ export function stepWorld3D(
         : undefined
       : inputs[id];
     const input = normalizeInput3D(source);
-    if (input.jump && !player.input.jump && player.status === "active") {
+    if (!input.flying && input.jump && !player.input.jump && player.status === "active") {
       player.jumpBufferRemaining = PHYSICS_3D.jumpBufferTime;
     }
     if (input.dash && !player.input.dash && player.status === "active") {

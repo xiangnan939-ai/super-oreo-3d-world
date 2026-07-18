@@ -89,6 +89,28 @@ test("supports variable jump height", () => {
   assert.ok(held.players.player.y > tapped.players.player.y + 1);
 });
 
+test("applies local developer speed, jump, flight and invulnerability modifiers", () => {
+  const settled = tick(createWorld3D(baseLevel()), {}, 3);
+  const normalRun = tick(settled, { moveX: 1 }, 45);
+  const fastRun = tick(settled, { moveX: 1, moveSpeedMultiplier: 2 }, 45);
+  assert.ok(fastRun.players.player.x > normalRun.players.player.x * 1.45);
+
+  const normalJump = tick(settled, { jump: true });
+  const highJump = tick(settled, { jump: true, jumpHeightMultiplier: 2 });
+  assert.ok(highJump.players.player.vy > normalJump.players.player.vy * 1.8);
+
+  const flying = tick(settled, { flying: true, flyVertical: 1, moveSpeedMultiplier: 1.5 }, 20);
+  assert.ok(flying.players.player.y > settled.players.player.y + 1.5);
+  assert.equal(flying.players.player.status, "active");
+
+  const hazardous = baseLevel({
+    hazards: [{ id: "test-hazard", x: 0, y: 1.2, z: 0, width: 2, height: 2, depth: 2 }],
+  });
+  const protectedWorld = tick(createWorld3D(hazardous), { invulnerable: true }, 3);
+  assert.equal(protectedWorld.players.player.status, "active");
+  assert.equal(protectedWorld.players.player.lives, 3);
+});
+
 test("honours the 100 ms coyote window and 120 ms jump buffer", () => {
   const ledgeLevel = baseLevel({
     spawn: { x: 1.25, y: 1.2, z: 0 },

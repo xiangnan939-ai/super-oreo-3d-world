@@ -37,6 +37,14 @@ export interface PlayerFrame extends PlayerProfile {
   tick: number;
 }
 
+export interface ChatMessage {
+  id: string;
+  playerId: string;
+  name: string;
+  text: string;
+  sentAt: number;
+}
+
 export interface RoomConnectionEvents {
   onStatus(status: RoomStatus): void;
   onRoomState(players: RoomPlayer[]): void;
@@ -44,6 +52,7 @@ export interface RoomConnectionEvents {
   onPlayerState(frame: PlayerFrame): void;
   onPlayerLeft(playerId: string): void;
   onError(message: string): void;
+  onChatMessage?(message: ChatMessage): void;
   /** Optional so the existing UI remains source-compatible. */
   onTransport?(transport: RoomTransport): void;
 }
@@ -53,6 +62,11 @@ interface StatePacket {
   frame: PlayerFrame;
   seq: number;
   sentAt: number;
+}
+
+interface ChatPacket {
+  type: "chat.message";
+  chat: ChatMessage;
 }
 
 type WireMessage = {
@@ -73,12 +87,14 @@ type WireMessage = {
   sdp?: string;
   candidate?: RTCIceCandidateInit;
   reconnectToken?: string;
+  chat?: ChatMessage;
 };
 
 interface PeerLink {
   playerId: string;
   connection: RTCPeerConnection;
   channel: RTCDataChannel | null;
+  eventChannel: RTCDataChannel | null;
   pendingCandidates: RTCIceCandidateInit[];
   viaTurn: boolean | null;
   retryCount: number;
@@ -93,6 +109,7 @@ const MAX_POSITION = 10_000;
 const MAX_VELOCITY = 500;
 const MAX_RECONNECT_DELAY_MS = 8_000;
 const MAX_INITIAL_CONNECT_ATTEMPTS = 3;
+export const MAX_CHAT_MESSAGE_LENGTH = 280;
 const pendingHostTokens = new Map<string, string>();
 const localOnlyRooms = new Set<string>();
 
@@ -207,6 +224,34 @@ export function sanitizePlayerFrame(value: unknown, profile: PlayerProfile): Pla
   };
 }
 
+export function sanitizeChatMessage(value: unknown, profile: PlayerProfile): ChatMessage | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<ChatMessage>;
+  const id = typeof candidate.id === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(candidate.id)
+    ? candidate.id
+    : null;
+  const text = typeof candidate.text === "string"
+    ? candidate.text.trim().replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, MAX_CHAT_MESSAGE_LENGTH)
+    : "";
+  if (!id || !text) return null;
+  return {
+    id,
+    playerId: profile.playerId,
+    name: profile.name,
+    text,
+    sentAt: typeof candidate.sentAt === "number" && Number.isSafeInteger(candidate.sentAt) && candidate.sentAt >= 0 && candidate.sentAt <= Date.now() + 86_400_000
+      ? candidate.sentAt
+      : Date.now(),
+  };
+}
+
+export function createChatMessage(profile: PlayerProfile, text: string): ChatMessage | null {
+  const id = typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+  return sanitizeChatMessage({ id, text, sentAt: Date.now() }, profile);
+}
+
 export async function createOnlineRoom(): Promise<string> {
   try {
     const response = await fetch("/api/rooms", {
@@ -239,6 +284,7 @@ export class RoomConnection {
   private currentPlayers = new Map<string, RoomPlayer>();
   private peers = new Map<string, PeerLink>();
   private lastSequenceByPlayer = new Map<string, number>();
+  private seenChatMessages = new Set<string>();
   private status: RoomStatus = "offline";
   private transport: RoomTransport = "none";
   private heartbeat: number | null = null;
@@ -335,6 +381,7 @@ export class RoomConnection {
     this.fallbackPlayers.clear();
     this.currentPlayers.clear();
     this.lastSequenceByPlayer.clear();
+    this.seenChatMessages.clear();
     this.opened = false;
     this.localIsHost = false;
     this.setTransport("none");
@@ -389,6 +436,26 @@ export class RoomConnection {
     const host = [...this.currentPlayers.values()].find((player) => player.host);
     const hostPeer = host ? this.peers.get(host.playerId) : undefined;
     if (!this.sendDataChannel(hostPeer, packet)) this.sendSocket(packet);
+  }
+
+  sendChatMessage(text: string): ChatMessage | null {
+    const chat = createChatMessage(this.profile, text);
+    if (!chat) return null;
+    const packet: ChatPacket = { type: "chat.message", chat };
+    this.emitChatMessage(chat);
+
+    if (this.channel) {
+      this.channel.postMessage(packet);
+      return chat;
+    }
+    if (this.localIsHost) {
+      this.forwardChatFromHost(packet);
+      return chat;
+    }
+    const host = [...this.currentPlayers.values()].find((player) => player.host);
+    const hostPeer = host ? this.peers.get(host.playerId) : undefined;
+    if (!this.sendEventChannel(hostPeer, packet)) this.sendSocket(packet);
+    return chat;
   }
 
   sendFinish(result: { elapsedMs: number; coins: number; deaths: number }): void {
@@ -522,6 +589,12 @@ export class RoomConnection {
       case "player.state":
         this.acceptRemotePacket(data);
         break;
+      case "relay.chat-message":
+        if (this.localIsHost) this.acceptGuestChat(data);
+        break;
+      case "chat.message":
+        this.acceptRemoteChat(data);
+        break;
       case "player.left":
         if (data.playerId) this.removePlayer(data.playerId);
         break;
@@ -600,6 +673,7 @@ export class RoomConnection {
       playerId,
       connection,
       channel: null,
+      eventChannel: null,
       pendingCandidates: [],
       viaTurn: null,
       retryCount: 0,
@@ -632,11 +706,33 @@ export class RoomConnection {
         ordered: false,
         maxRetransmits: 0,
       }));
+      this.attachDataChannel(peer, connection.createDataChannel("room-events", {
+        ordered: true,
+      }));
     }
     return peer;
   }
 
   private attachDataChannel(peer: PeerLink, channel: RTCDataChannel): void {
+    if (channel.label === "room-events") {
+      peer.eventChannel = channel;
+      channel.addEventListener("open", () => this.refreshTransport());
+      channel.addEventListener("close", () => this.refreshTransport());
+      channel.addEventListener("error", () => this.refreshTransport());
+      channel.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") return;
+        let packet: WireMessage;
+        try {
+          packet = JSON.parse(event.data) as WireMessage;
+        } catch {
+          return;
+        }
+        if (packet.type !== "chat.message") return;
+        if (this.localIsHost) this.acceptGuestChat(packet, peer.playerId);
+        else this.acceptRemoteChat(packet);
+      });
+      return;
+    }
     if (channel.label !== "player-state") {
       channel.close();
       return;
@@ -750,6 +846,38 @@ export class RoomConnection {
     this.events.onPlayerState(frame);
   }
 
+  private acceptGuestChat(data: WireMessage, expectedPlayerId?: string): void {
+    if (!this.localIsHost || !data.chat) return;
+    const sourceId = expectedPlayerId ?? data.chat.playerId;
+    const source = this.currentPlayers.get(sourceId);
+    if (!source || source.host || (expectedPlayerId && data.chat.playerId !== expectedPlayerId)) return;
+    const chat = sanitizeChatMessage(data.chat, source);
+    if (!chat) return;
+    const accepted = { ...chat, sentAt: Date.now() };
+    if (!this.emitChatMessage(accepted)) return;
+    this.forwardChatFromHost({ type: "chat.message", chat: accepted }, sourceId);
+  }
+
+  private acceptRemoteChat(data: WireMessage): void {
+    if (!data.chat || data.chat.playerId === this.profile.playerId) return;
+    const source = this.currentPlayers.get(data.chat.playerId);
+    if (!source) return;
+    const chat = sanitizeChatMessage(data.chat, source);
+    if (chat) this.emitChatMessage(chat);
+  }
+
+  private emitChatMessage(chat: ChatMessage): boolean {
+    const key = `${chat.playerId}:${chat.id}`;
+    if (this.seenChatMessages.has(key)) return false;
+    this.seenChatMessages.add(key);
+    if (this.seenChatMessages.size > 512) {
+      const oldest = this.seenChatMessages.values().next().value;
+      if (typeof oldest === "string") this.seenChatMessages.delete(oldest);
+    }
+    this.events.onChatMessage?.(chat);
+    return true;
+  }
+
   private acceptSequence(playerId: string, value: unknown): boolean {
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return true;
     const previous = this.lastSequenceByPlayer.get(playerId);
@@ -768,11 +896,32 @@ export class RoomConnection {
     }
   }
 
+  private forwardChatFromHost(packet: ChatPacket, excludePlayerId?: string): void {
+    for (const player of this.currentPlayers.values()) {
+      if (player.host || player.playerId === this.profile.playerId || player.playerId === excludePlayerId) continue;
+      const peer = this.peers.get(player.playerId);
+      if (!this.sendEventChannel(peer, packet)) {
+        this.sendSocket({ ...packet, type: "host.relay-chat", targetId: player.playerId });
+      }
+    }
+  }
+
   private sendDataChannel(peer: PeerLink | undefined, packet: StatePacket): boolean {
     if (!peer?.channel || peer.channel.readyState !== "open") return false;
     if (peer.channel.bufferedAmount > 64 * 1024) return false;
     try {
       peer.channel.send(JSON.stringify(packet));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private sendEventChannel(peer: PeerLink | undefined, packet: ChatPacket): boolean {
+    if (!peer?.eventChannel || peer.eventChannel.readyState !== "open") return false;
+    if (peer.eventChannel.bufferedAmount > 128 * 1024) return false;
+    try {
+      peer.eventChannel.send(JSON.stringify(packet));
       return true;
     } catch {
       return false;
@@ -835,6 +984,7 @@ export class RoomConnection {
     if (!peer) return;
     this.peers.delete(playerId);
     try { peer.channel?.close(); } catch { /* already closed */ }
+    try { peer.eventChannel?.close(); } catch { /* already closed */ }
     try { peer.connection.close(); } catch { /* already closed */ }
   }
 
@@ -942,6 +1092,9 @@ export class RoomConnection {
         break;
       case "player.state":
         if (data.frame) this.events.onPlayerState(data.frame);
+        break;
+      case "chat.message":
+        this.acceptRemoteChat(data);
         break;
       case "player.left":
         if (data.playerId) {

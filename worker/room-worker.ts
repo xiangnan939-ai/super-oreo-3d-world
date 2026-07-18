@@ -12,6 +12,7 @@ export const GUEST_RECONNECT_GRACE_MS = 45_000;
 const ROOM_IDLE_TTL_MS = 6 * 60 * 60 * 1_000;
 const MAX_POSITION = 10_000;
 const MAX_VELOCITY = 500;
+export const MAX_CHAT_MESSAGE_LENGTH = 280;
 
 type DurableObjectIdLike = object;
 
@@ -129,6 +130,7 @@ interface ClientMessage {
   targetId?: unknown;
   sdp?: unknown;
   candidate?: unknown;
+  chat?: unknown;
 }
 
 export interface ServerPlayerFrame extends PublicRoomPlayer {
@@ -141,6 +143,14 @@ export interface ServerPlayerFrame extends PublicRoomPlayer {
   facing: number;
   action: string;
   tick: number;
+}
+
+export interface ServerChatMessage {
+  id: string;
+  playerId: string;
+  name: string;
+  text: string;
+  sentAt: number;
 }
 
 function jsonResponse(body: unknown, status = 200, headers?: HeadersInit): Response {
@@ -329,6 +339,29 @@ export function sanitizeServerFrame(value: unknown, player: PublicRoomPlayer): S
     facing: frame.facing,
     action: typeof frame.action === "string" ? frame.action.slice(0, 24) : "idle",
     tick: frame.tick,
+  };
+}
+
+export function sanitizeServerChat(
+  value: unknown,
+  player: PublicRoomPlayer,
+  now = Date.now(),
+): ServerChatMessage | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<ServerChatMessage>;
+  const id = typeof candidate.id === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(candidate.id)
+    ? candidate.id
+    : null;
+  const text = typeof candidate.text === "string"
+    ? candidate.text.trim().replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, MAX_CHAT_MESSAGE_LENGTH)
+    : "";
+  if (!id || !text) return null;
+  return {
+    id,
+    playerId: player.playerId,
+    name: player.name,
+    text,
+    sentAt: now,
   };
 }
 
@@ -554,6 +587,35 @@ export class GameRoom {
           ...(typeof data.seq === "number" ? { seq: data.seq } : {}),
           ...(typeof data.sentAt === "number" ? { sentAt: data.sentAt } : {}),
         });
+        break;
+      }
+
+      case "chat.message": {
+        const chat = sanitizeServerChat(data.chat, publicPlayer(player), now);
+        if (!chat) return this.sendError(socket, "INVALID_CHAT", "chat.message contains invalid text.");
+        const players = this.playerSockets().map(({ player: current }) => publicPlayer(current));
+        const recipients = directedStateRecipients(publicPlayer(player), players);
+        this.sendToPlayers(recipients, {
+          type: player.host ? "chat.message" : "relay.chat-message",
+          chat,
+        });
+        break;
+      }
+
+      case "host.relay-chat": {
+        if (!player.host) return this.sendError(socket, "HOST_ONLY", "Only the host can relay chat messages.");
+        if (typeof data.targetId !== "string") return this.sendError(socket, "TARGET_REQUIRED", "A chat relay target is required.");
+        const players = this.playerSockets().map(({ player: current }) => publicPlayer(current));
+        const sourceId = data.chat && typeof data.chat === "object"
+          ? (data.chat as { playerId?: unknown }).playerId
+          : null;
+        const source = typeof sourceId === "string" ? players.find((current) => current.playerId === sourceId) : undefined;
+        if (!source) return this.sendError(socket, "UNKNOWN_SOURCE", "The chat sender is not in this room.");
+        const chat = sanitizeServerChat(data.chat, source, now);
+        if (!chat) return this.sendError(socket, "INVALID_CHAT", "host.relay-chat contains invalid text.");
+        const recipients = directedStateRecipients(publicPlayer(player), players, data.targetId);
+        if (recipients.length !== 1) return this.sendError(socket, "INVALID_TARGET", "The chat relay target is not a guest in this room.");
+        this.sendToPlayers(recipients, { type: "chat.message", chat });
         break;
       }
 

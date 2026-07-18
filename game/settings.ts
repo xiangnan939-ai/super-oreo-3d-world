@@ -46,7 +46,7 @@ export const GAME_ACTION_LABELS: Record<GameAction, string> = {
   restart: "从头重开",
 };
 
-const RESERVED_BINDINGS = new Set(["Tab", "Escape"]);
+const RESERVED_BINDINGS = new Set(["Tab", "Escape", "KeyT", "Backquote"]);
 
 function finiteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
