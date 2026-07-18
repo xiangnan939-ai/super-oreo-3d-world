@@ -259,10 +259,15 @@ export interface Checkpoint3D extends Box3D {
 
 export interface GoalDefinition3D extends Box3D {
   id?: string;
+  /** Optional prefix-count quest that must be complete before the goal opens. */
+  requiredCollectiblePrefix?: string;
+  requiredCollectibleCount?: number;
 }
 
 export interface Goal3D extends Box3D {
   id: string;
+  requiredCollectiblePrefix: string;
+  requiredCollectibleCount: number;
 }
 
 export interface LevelBounds3D {
@@ -320,6 +325,7 @@ export interface PlayerState3D extends Box3D {
   dashRemaining: number;
   dashDirectionX: number;
   dashDirectionZ: number;
+  goalLockNoticeTick: number;
   input: NormalizedInputState3D;
 }
 
@@ -343,6 +349,7 @@ export type GameEvent3D =
   | { type: "checkpoint"; playerId: string; checkpointId: string }
   | { type: "enemy-stomp"; playerId: string; enemyId: string; value: number }
   | { type: "dash"; playerId: string }
+  | { type: "goal-locked"; playerId: string; goalId: string; current: number; required: number }
   | { type: "goal"; playerId: string; goalId: string };
 
 export interface WorldState3D {
@@ -534,6 +541,7 @@ function createPlayer3D(
     dashRemaining: 0,
     dashDirectionX: 0,
     dashDirectionZ: -1,
+    goalLockNoticeTick: -10_000,
     input: { ...NEUTRAL_INPUT_3D },
   };
 }
@@ -792,7 +800,12 @@ export function createWorld3D(
     }
   }
   const goal: Goal3D | null = level.goal
-    ? { ...level.goal, id: level.goal.id ?? "goal" }
+    ? {
+        ...level.goal,
+        id: level.goal.id ?? "goal",
+        requiredCollectiblePrefix: level.goal.requiredCollectiblePrefix?.trim() ?? "",
+        requiredCollectibleCount: Math.max(0, Math.floor(finiteOr(level.goal.requiredCollectibleCount, 0))),
+      }
     : null;
 
   return {
@@ -1037,7 +1050,11 @@ function resolveHorizontalAxis(
       const crossed =
         oldPositiveFace <= oldFace + PHYSICS_3D.collisionEpsilon &&
         newPositiveFace >= face - PHYSICS_3D.collisionEpsilon;
-      if ((crossed || overlaps3D(player, solid)) && face < nearestFace) {
+      const overlappedFromApproachSide =
+        overlaps3D(player, solid) &&
+        startPosition <= solid[axis === "x" ? "previousX" : "previousZ"] +
+          PHYSICS_3D.collisionEpsilon;
+      if ((crossed || overlappedFromApproachSide) && face < nearestFace) {
         nearestFace = face;
         collision = solid;
       }
@@ -1074,7 +1091,11 @@ function resolveHorizontalAxis(
       const crossed =
         oldNegativeFace >= oldFace - PHYSICS_3D.collisionEpsilon &&
         newNegativeFace <= face + PHYSICS_3D.collisionEpsilon;
-      if ((crossed || overlaps3D(player, solid)) && face > nearestFace) {
+      const overlappedFromApproachSide =
+        overlaps3D(player, solid) &&
+        startPosition >= solid[axis === "x" ? "previousX" : "previousZ"] -
+          PHYSICS_3D.collisionEpsilon;
+      if ((crossed || overlappedFromApproachSide) && face > nearestFace) {
         nearestFace = face;
         collision = solid;
       }
@@ -1550,6 +1571,24 @@ function updatePlayer3D(
   }
 
   if (world.goal && overlaps3D(player, world.goal)) {
+    const currentRequirementCount = world.goal.requiredCollectiblePrefix
+      ? world.collectibles.filter((collectible) =>
+          collectible.collected && collectible.id.startsWith(world.goal?.requiredCollectiblePrefix ?? ""),
+        ).length
+      : world.goal.requiredCollectibleCount;
+    if (currentRequirementCount < world.goal.requiredCollectibleCount) {
+      if (world.tick - player.goalLockNoticeTick >= 90) {
+        player.goalLockNoticeTick = world.tick;
+        world.events.push({
+          type: "goal-locked",
+          playerId: player.id,
+          goalId: world.goal.id,
+          current: currentRequirementCount,
+          required: world.goal.requiredCollectibleCount,
+        });
+      }
+      return;
+    }
     player.status = "won";
     player.vx = 0;
     player.vy = 0;

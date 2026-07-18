@@ -782,7 +782,7 @@ export function OreoGameApp() {
 
       {screen === "menu" && (
         <section className="hero-panel">
-          <div className="eyebrow"><span /> 六境原创 3D 平台远征 <span /></div>
+          <div className="eyebrow"><span /> 六境原创 3D 平台冒险 <span /></div>
           <h1 aria-label="超级奥利奥">
             <span className="title-super">超级</span>
             <span className="title-oreo">奥利奥</span>

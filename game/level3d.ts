@@ -117,6 +117,10 @@ export function toSimulationLevel(): LevelDefinition3D {
         depth: Math.abs(end.z - start.z) + Math.max(fence.postWidth, fence.railWidth),
       };
     }));
+  const sceneryBlockers = WORLD_3D.blockers.map((blocker) => ({
+    id: blocker.id,
+    ...box3D(blocker),
+  }));
 
   return {
     id: WORLD_3D.metadata.id,
@@ -131,7 +135,7 @@ export function toSimulationLevel(): LevelDefinition3D {
       killY: WORLD_3D.bounds.deathY,
     },
     platforms: [...staticPlatforms, ...rampPlatforms, ...movingPlatforms],
-    blockers: fenceBlockers,
+    blockers: [...fenceBlockers, ...sceneryBlockers],
     hazards: WORLD_3D.hazards.map((hazard) => ({
       id: hazard.id,
       ...box3D(hazard),
@@ -172,6 +176,11 @@ export function toSimulationLevel(): LevelDefinition3D {
       ...box3D(checkpoint),
       respawn: { ...checkpoint.respawnPosition },
     })),
-    goal: { id: WORLD_3D.goal.id, ...box3D(WORLD_3D.goal) },
+    goal: {
+      id: WORLD_3D.goal.id,
+      ...box3D(WORLD_3D.goal),
+      requiredCollectiblePrefix: "star-medal",
+      requiredCollectibleCount: WORLD_3D.goal.requiredStarMedals,
+    },
   };
 }

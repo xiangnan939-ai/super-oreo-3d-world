@@ -368,6 +368,140 @@ test("hands a rider to a higher static dock without a lateral snap", () => {
   assert.ok(walkingWorld.players.player.x < 0.1);
 });
 
+test("does not snap a moving-platform rider backward at a lower dock edge", () => {
+  const level = baseLevel({
+    spawn: { x: 1.45, y: 0.95, z: 0 },
+    platforms: [
+      {
+        id: "edge-carrier",
+        x: 0,
+        y: 0,
+        z: 0,
+        width: 4,
+        height: 0.5,
+        depth: 4,
+        motion: { x: 1.5, period: 2 },
+      },
+      {
+        id: "lower-dock",
+        x: 4,
+        y: -0.12,
+        z: 0,
+        width: 4,
+        height: 0.5,
+        depth: 4,
+      },
+    ],
+  });
+  let world = createWorld3D(level);
+  const carrier = world.platforms.find((platform) => platform.id === "edge-carrier");
+  const player = world.players.player;
+  player.x = carrier.x + 1.45;
+  player.y = carrier.y + carrier.height / 2 + PHYSICS_3D.playerHeight / 2;
+  player.z = 0;
+  player.grounded = true;
+  player.groundObjectId = carrier.id;
+
+  for (let index = 0; index < 90; index += 1) {
+    const previousX = world.players.player.x;
+    const previousPlatformX = world.platforms.find((platform) => platform.id === "edge-carrier").x;
+    world = tick(world, { moveX: 1 });
+    const platformX = world.platforms.find((platform) => platform.id === "edge-carrier").x;
+    const expectedMaximum = Math.abs(platformX - previousPlatformX) + 0.12;
+    assert.ok(
+      Math.abs(world.players.player.x - previousX) <= expectedMaximum,
+      `unexpected edge snap at tick ${index}: ${world.players.player.x - previousX}`,
+    );
+  }
+});
+
+test("keeps an idle rider stable on every moving-platform edge", () => {
+  const level = baseLevel({
+    platforms: [{
+      id: "edge-stability-carrier",
+      x: 0,
+      y: 0,
+      z: 0,
+      width: 4,
+      height: 0.5,
+      depth: 4,
+      motion: { x: 4, y: 1, z: 3, period: 2.6 },
+    }],
+  });
+
+  for (const [offsetX, offsetZ] of [[1.54, 0], [-1.54, 0], [0, 1.54], [0, -1.54]]) {
+    let world = createWorld3D(level);
+    const carrier = world.platforms[0];
+    const player = world.players.player;
+    player.x = carrier.x + offsetX;
+    player.y = carrier.y + carrier.height / 2 + PHYSICS_3D.playerHeight / 2;
+    player.z = carrier.z + offsetZ;
+    player.grounded = true;
+    player.groundObjectId = carrier.id;
+    for (let index = 0; index < 120; index += 1) {
+      world = tick(world);
+      const currentCarrier = world.platforms[0];
+      assert.equal(world.players.player.groundObjectId, carrier.id);
+      assert.ok(Math.abs(world.players.player.x - currentCarrier.x - offsetX) < 0.025);
+      assert.ok(Math.abs(world.players.player.z - currentCarrier.z - offsetZ) < 0.025);
+    }
+  }
+});
+
+test("does not resolve through a moving platform's far edge when it catches up from behind", () => {
+  const level = baseLevel({
+    spawn: { x: -15, y: 16, z: 281 },
+    bounds: { minX: -30, maxX: 20, minZ: 260, maxZ: 310, killY: -8 },
+    platforms: [
+      {
+        id: "lower-landing",
+        x: -10,
+        y: 13,
+        z: 280,
+        width: 6,
+        height: 1.4,
+        depth: 6,
+      },
+      {
+        id: "orbit-carrier",
+        x: -15,
+        y: 14.2,
+        z: 281,
+        width: 5.5,
+        height: 0.8,
+        depth: 5.5,
+        motion: {
+          x: 11,
+          y: 1,
+          z: 7,
+          period: 6,
+          phase: 0.1,
+          travelSeconds: 2.7,
+          waitAtEndsSeconds: 0.3,
+          easing: "smoothstep",
+        },
+      },
+    ],
+  });
+  let world = createWorld3D(level);
+  const carrier = world.platforms.find((platform) => platform.id === "orbit-carrier");
+  const player = world.players.player;
+  player.x = carrier.x + carrier.width / 2 - player.width / 2 - 0.02;
+  player.y = carrier.y + carrier.height / 2 + player.height / 2;
+  player.z = carrier.z;
+  player.grounded = true;
+  player.groundObjectId = carrier.id;
+
+  for (let index = 0; index < 45; index += 1) {
+    const previousX = world.players.player.x;
+    world = tick(world, index < 20 ? { moveX: 1, moveZ: 0 } : {});
+    assert.ok(
+      Math.abs(world.players.player.x - previousX) < 0.35,
+      `moving platform caused a far-edge snap at tick ${index}`,
+    );
+  }
+});
+
 test("uses low acceleration and long stopping distance on ice", () => {
   const normalLevel = baseLevel();
   const iceLevel = baseLevel({
@@ -632,6 +766,41 @@ test("stomps enemies in 3D and reaches the goal", () => {
   assert.equal(world.players.player.status, "won");
   assert.equal(world.status, "won");
   assert.ok(world.events.some((event) => event.type === "goal"));
+});
+
+test("keeps an exploration goal locked until its collectible quest is complete", () => {
+  const level = baseLevel({
+    spawn: { x: 0, y: 1.2, z: 0 },
+    collectibles: [
+      { id: "star-medal-a", x: 2, y: 1.2, z: 0, width: 1, height: 1, depth: 1 },
+      { id: "star-medal-b", x: 4, y: 1.2, z: 0, width: 1, height: 1, depth: 1 },
+      { id: "coin-a", x: 3, y: 1.2, z: 2, width: 1, height: 1, depth: 1 },
+    ],
+    goal: {
+      id: "quest-gate",
+      x: 7,
+      y: 1.5,
+      z: 0,
+      width: 2,
+      height: 3,
+      depth: 3,
+      requiredCollectiblePrefix: "star-medal",
+      requiredCollectibleCount: 2,
+    },
+  });
+  let locked = createWorld3D(level);
+  locked.players.player.x = 7;
+  locked = tick(locked);
+  assert.equal(locked.status, "playing");
+  assert.ok(locked.events.some((event) => event.type === "goal-locked"));
+
+  let unlocked = createWorld3D(level);
+  unlocked.collectibles[0].collected = true;
+  unlocked.collectibles[1].collected = true;
+  unlocked.players.player.x = 7;
+  unlocked = tick(unlocked);
+  assert.equal(unlocked.status, "won");
+  assert.ok(unlocked.events.some((event) => event.type === "goal"));
 });
 
 test("grants one deterministic air dash per landing", () => {

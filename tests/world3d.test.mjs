@@ -5,13 +5,16 @@ import { toSimulationLevel } from "../game/level3d.ts";
 import { createWorld3D, PHYSICS_3D } from "../game/simulation3d.ts";
 import { WORLD_3D } from "../game/world3d.ts";
 
-test("adapts every visible ramp and collidable fence into physics", () => {
+test("adapts every visible ramp, fence and landmark blocker into physics", () => {
   const level = toSimulationLevel();
   for (const ramp of WORLD_3D.ramps) {
     assert.ok(level.platforms.some((platform) => platform.id.startsWith(`${ramp.id}-collision-`)));
   }
   for (const fence of WORLD_3D.fences.filter((item) => item.collision)) {
     assert.ok(level.blockers.some((blocker) => blocker.id.startsWith(`${fence.id}-collision-`)));
+  }
+  for (const blocker of WORLD_3D.blockers) {
+    assert.ok(level.blockers.some((item) => item.id === blocker.id));
   }
 });
 
@@ -31,6 +34,7 @@ test("ships the six-biome expedition with optional challenge routes", () => {
   assert.equal(WORLD_3D.collectibles.filter((item) => item.kind === "moon_shard").length, 5);
   assert.ok(WORLD_3D.assetProps.length >= 10);
   assert.equal(WORLD_3D.goal.id, "goal-moon-gate");
+  assert.equal(WORLD_3D.goal.requiredStarMedals, 3);
 });
 
 test("instantiates the complete production expedition without duplicate entity ids", () => {

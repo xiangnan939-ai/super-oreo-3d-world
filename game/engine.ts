@@ -725,6 +725,11 @@ export class OreoGameEngine {
       (this.world.time <= 720 ? 2 : this.world.time <= 840 ? 1 : 0) +
       (coins >= totalCoins * 0.6 ? 1 : 0);
     const rating: EngineHud["rating"] = ratingPoints >= 9 ? "S" : ratingPoints >= 7 ? "A" : ratingPoints >= 4 ? "B" : "C";
+    const objective = biome.id === "moon" && WORLD_3D.goal.requiredStarMedals > 0
+      ? starMedals < WORLD_3D.goal.requiredStarMedals
+        ? `月光门封印 ${starMedals}/${WORLD_3D.goal.requiredStarMedals} · 回望支路寻找星章`
+        : "星章共鸣完成 · 穿过月光门结束远征"
+      : biome.objective;
     return {
       coins,
       totalCoins,
@@ -741,7 +746,7 @@ export class OreoGameEngine {
       totalCheckpoints: WORLD_3D.checkpoints.length,
       biome: biome.name,
       biomeSubtitle: biome.subtitle,
-      objective: biome.objective,
+      objective,
       dashReady: player.airDashAvailable,
       rating,
       finished,
@@ -894,6 +899,21 @@ export class OreoGameEngine {
       if (!mesh) continue;
       mesh.visible = hazard.active;
       mesh.userData.hazardActive = hazard.active;
+    }
+    const goal = this.worldGroup.getObjectByName("goal-moon-gate-visual");
+    if (goal) {
+      const required = WORLD_3D.goal.requiredStarMedals;
+      const collected = this.world.collectibles.filter((item) => item.collected && item.id.startsWith("star-medal")).length;
+      const unlocked = collected >= required;
+      const core = goal.getObjectByName("goal-core");
+      if (core instanceof THREE.Mesh && core.material instanceof THREE.MeshStandardMaterial) {
+        core.material.color.set(unlocked ? 0xfff2b8 : 0x8582a8);
+        core.material.emissive.set(unlocked ? 0x8a86ff : 0x272746);
+        core.material.emissiveIntensity = unlocked ? 0.95 : 0.18;
+        core.rotation.z += unlocked ? 0.012 : 0.002;
+      }
+      const light = goal.getObjectByName("goal-light");
+      if (light instanceof THREE.PointLight) light.intensity = unlocked ? 2.8 : 0.45;
     }
   }
 
@@ -1147,6 +1167,7 @@ export class OreoGameEngine {
     }
     for (const prop of WORLD_3D.assetProps) this.loadAssetProp(prop);
     const goal = this.createGoal();
+    goal.name = "goal-moon-gate-visual";
     goal.position.set(WORLD_3D.goal.position.x, WORLD_3D.goal.position.y - WORLD_3D.goal.size.y / 2, WORLD_3D.goal.position.z);
     goal.rotation.y = WORLD_3D.goal.facingYawRadians;
     this.worldGroup.add(goal);
@@ -1788,6 +1809,7 @@ export class OreoGameEngine {
     arch.position.y = 4;
     group.add(arch);
     const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.2, 28), new THREE.MeshStandardMaterial({ color: 0xfff2b8, emissive: 0x8a86ff, emissiveIntensity: 0.75, roughness: 0.28 }));
+    disc.name = "goal-core";
     disc.rotation.x = Math.PI / 2;
     disc.position.y = 3.85;
     group.add(disc);
@@ -1799,6 +1821,7 @@ export class OreoGameEngine {
       group.add(ray);
     }
     const light = new THREE.PointLight(0xc0b9ff, 2.4, 14);
+    light.name = "goal-light";
     light.position.y = 3.8;
     group.add(light);
     return group;
@@ -1994,6 +2017,189 @@ export class OreoGameEngine {
         lantern.name = "floating-decoration";
         lantern.userData.baseY = 0;
         group.add(lantern, new THREE.PointLight(color, 1.1, 6));
+        break;
+      }
+      case "storybook_house": {
+        const wall = new THREE.MeshStandardMaterial({ color, roughness: 0.92 });
+        const trim = new THREE.MeshStandardMaterial({ color: 0xfff1d2, roughness: 0.78 });
+        const roof = new THREE.MeshStandardMaterial({ color: 0xe86b55, roughness: 0.86 });
+        const body = new THREE.Mesh(new THREE.BoxGeometry(3.4, 2.6, 2.8), wall);
+        body.position.y = 1.3;
+        body.castShadow = true;
+        group.add(body);
+        const roofMesh = new THREE.Mesh(new THREE.ConeGeometry(2.65, 1.7, 4), roof);
+        roofMesh.position.y = 3.3;
+        roofMesh.rotation.y = Math.PI / 4;
+        roofMesh.scale.z = 0.86;
+        roofMesh.castShadow = true;
+        group.add(roofMesh);
+        const door = new THREE.Mesh(new THREE.CapsuleGeometry(0.42, 0.78, 6, 12), wood);
+        door.position.set(0, 0.88, 1.43);
+        door.scale.z = 0.2;
+        group.add(door);
+        for (const x of [-1.05, 1.05]) {
+          const windowFrame = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.72, 0.09), trim);
+          windowFrame.position.set(x, 1.55, 1.45);
+          group.add(windowFrame);
+          const windowPane = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.48, 0.06), new THREE.MeshStandardMaterial({ color: 0x8adcf2, emissive: 0x245f80, emissiveIntensity: 0.34, roughness: 0.26 }));
+          windowPane.position.set(x, 1.55, 1.51);
+          group.add(windowPane);
+        }
+        const chimney = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, 1.35, 8), trim);
+        chimney.position.set(1.05, 3.72, -0.35);
+        chimney.castShadow = true;
+        group.add(chimney);
+        break;
+      }
+      case "garden_fountain": {
+        const stone = new THREE.MeshStandardMaterial({ color: 0xffefcc, roughness: 0.7 });
+        const water = new THREE.MeshPhysicalMaterial({ color, emissive: color.clone().multiplyScalar(0.18), emissiveIntensity: 0.32, transparent: true, opacity: 0.74, transmission: 0.2, roughness: 0.14, clearcoat: 1 });
+        const basin = new THREE.Mesh(new THREE.CylinderGeometry(1.55, 1.72, 0.48, 28), stone);
+        basin.position.y = 0.24;
+        basin.castShadow = true;
+        group.add(basin);
+        const pool = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.35, 0.1, 28), water);
+        pool.position.y = 0.51;
+        group.add(pool);
+        const column = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.34, 1.65, 12), stone);
+        column.position.y = 1.22;
+        group.add(column);
+        const topBowl = new THREE.Mesh(new THREE.SphereGeometry(0.62, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), water);
+        topBowl.position.y = 2.05;
+        topBowl.rotation.x = Math.PI;
+        group.add(topBowl);
+        for (let index = 0; index < 6; index += 1) {
+          const drop = new THREE.Mesh(new THREE.SphereGeometry(0.09, 9, 7), water);
+          const angle = index / 6 * Math.PI * 2;
+          drop.position.set(Math.cos(angle) * 0.72, 1.55 + (index % 2) * 0.22, Math.sin(angle) * 0.72);
+          drop.name = "floating-decoration";
+          drop.userData.baseY = drop.position.y;
+          group.add(drop);
+        }
+        break;
+      }
+      case "realm_gateway": {
+        const stone = new THREE.MeshStandardMaterial({ color: 0xffe3a8, roughness: 0.7 });
+        const glow = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.72, roughness: 0.3 });
+        for (const x of [-2.1, 2.1]) {
+          const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.82, 4.6, 10), stone);
+          tower.position.set(x, 2.3, 0);
+          tower.castShadow = true;
+          group.add(tower);
+          const cap = new THREE.Mesh(new THREE.ConeGeometry(1.05, 1.55, 10), glow);
+          cap.position.set(x, 5.15, 0);
+          cap.castShadow = true;
+          group.add(cap);
+        }
+        const arch = new THREE.Mesh(new THREE.TorusGeometry(2.1, 0.42, 10, 32, Math.PI), stone);
+        arch.position.y = 4.25;
+        group.add(arch);
+        const emblem = new THREE.Mesh(new THREE.OctahedronGeometry(0.46, 0), glow);
+        emblem.position.y = 4.35;
+        emblem.name = "spin-decoration";
+        group.add(emblem, new THREE.PointLight(color, 1.6, 9));
+        break;
+      }
+      case "clockwork_crane": {
+        const brass = new THREE.MeshStandardMaterial({ color, metalness: 0.52, roughness: 0.36 });
+        const darkMetal = new THREE.MeshStandardMaterial({ color: 0x62566b, metalness: 0.64, roughness: 0.3 });
+        const mast = new THREE.Mesh(new THREE.BoxGeometry(0.72, 6.4, 0.72), brass);
+        mast.position.y = 3.2;
+        mast.castShadow = true;
+        group.add(mast);
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(6.6, 0.55, 0.65), brass);
+        beam.position.set(1.8, 6.15, 0);
+        beam.castShadow = true;
+        group.add(beam);
+        for (let index = 0; index < 5; index += 1) {
+          const brace = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.1, 0.18), darkMetal);
+          brace.position.set(-0.45 + index * 1.25, 6.15, 0);
+          brace.rotation.z = index % 2 ? -0.82 : 0.82;
+          group.add(brace);
+        }
+        const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 3.2, 7), darkMetal);
+        cable.position.set(4.25, 4.35, 0);
+        group.add(cable);
+        const hook = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.1, 8, 18, Math.PI * 1.45), darkMetal);
+        hook.position.set(4.25, 2.65, 0);
+        group.add(hook);
+        const gear = new THREE.Mesh(new THREE.TorusGeometry(0.68, 0.16, 9, 24), brass);
+        gear.position.set(0, 3.15, 0.48);
+        gear.name = "spin-decoration";
+        group.add(gear);
+        break;
+      }
+      case "frost_shrine": {
+        const ice = new THREE.MeshPhysicalMaterial({ color, emissive: color.clone().multiplyScalar(0.42), emissiveIntensity: 0.65, transmission: 0.22, transparent: true, opacity: 0.9, roughness: 0.12, clearcoat: 1 });
+        for (const x of [-1.75, 1.75]) {
+          const crystal = new THREE.Mesh(new THREE.ConeGeometry(0.62, 5.2, 6), ice);
+          crystal.position.set(x, 2.6, 0);
+          crystal.castShadow = true;
+          group.add(crystal);
+          const side = new THREE.Mesh(new THREE.ConeGeometry(0.35, 2.7, 6), ice);
+          side.position.set(x * 1.28, 1.35, 0.55);
+          side.rotation.z = x < 0 ? -0.2 : 0.2;
+          group.add(side);
+        }
+        const halo = new THREE.Mesh(new THREE.TorusGeometry(1.75, 0.18, 10, 34, Math.PI), ice);
+        halo.position.y = 3.35;
+        halo.name = "spin-decoration";
+        group.add(halo, new THREE.PointLight(color, 1.7, 10));
+        break;
+      }
+      case "cocoa_foundry": {
+        const brick = new THREE.MeshStandardMaterial({ color, roughness: 0.9 });
+        const brass = new THREE.MeshStandardMaterial({ color: 0xe9a545, metalness: 0.48, roughness: 0.4 });
+        const hall = new THREE.Mesh(new THREE.BoxGeometry(5.8, 3.7, 4.2), brick);
+        hall.position.y = 1.85;
+        hall.castShadow = true;
+        group.add(hall);
+        for (const x of [-1.8, 1.8]) {
+          const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.62, 5.3, 10), brass);
+          stack.position.set(x, 4.3, -1.15);
+          stack.castShadow = true;
+          group.add(stack);
+          const rim = new THREE.Mesh(new THREE.TorusGeometry(0.48, 0.1, 8, 18), brass);
+          rim.position.set(x, 7, -1.15);
+          rim.rotation.x = Math.PI / 2;
+          group.add(rim);
+        }
+        const furnace = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.12, 0.26, 20), new THREE.MeshStandardMaterial({ color: 0xff6b39, emissive: 0xff2b0a, emissiveIntensity: 1.3, roughness: 0.42 }));
+        furnace.position.set(0, 1.35, 2.15);
+        furnace.rotation.x = Math.PI / 2;
+        group.add(furnace, new THREE.PointLight(0xff5c2f, 1.8, 10));
+        const gear = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.2, 10, 28), brass);
+        gear.position.set(0, 2.65, 2.16);
+        gear.name = "spin-decoration";
+        group.add(gear);
+        break;
+      }
+      case "moon_palace": {
+        const moonstone = new THREE.MeshStandardMaterial({ color, emissive: color.clone().multiplyScalar(0.22), emissiveIntensity: 0.42, roughness: 0.42 });
+        const glass = new THREE.MeshPhysicalMaterial({ color: 0xbde8ff, emissive: 0x646dd0, emissiveIntensity: 0.65, transparent: true, opacity: 0.82, roughness: 0.13, clearcoat: 1 });
+        const towerSpecs = [[0, 0, 2.1, 8], [-3.2, 0.2, 1.45, 5.7], [3.2, 0.2, 1.45, 5.7]] as const;
+        for (const [x, z, radius, height] of towerSpecs) {
+          const tower = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.72, radius, height, 12), moonstone);
+          tower.position.set(x, height / 2, z);
+          tower.castShadow = true;
+          group.add(tower);
+          const dome = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.82, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), glass);
+          dome.position.set(x, height, z);
+          group.add(dome);
+          const spire = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.18, 1.8, 7), glass);
+          spire.position.set(x, height + radius * 0.78 + 0.75, z);
+          group.add(spire);
+        }
+        const bridge = new THREE.Mesh(new THREE.BoxGeometry(6.5, 1.6, 2.1), moonstone);
+        bridge.position.y = 2.5;
+        group.add(bridge);
+        for (const x of [-1.65, 0, 1.65]) {
+          const window = new THREE.Mesh(new THREE.CapsuleGeometry(0.23, 0.65, 5, 10), glass);
+          window.position.set(x, 4.2, 2.08);
+          window.scale.z = 0.16;
+          group.add(window);
+        }
+        group.add(new THREE.PointLight(0xa9c8ff, 2.1, 16));
         break;
       }
       default: break;
